@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     ANGEL_ONE_CLIENT_CODE: Optional[str] = None
     ANGEL_ONE_PASSWORD: Optional[str] = None
     ANGEL_ONE_TOTP_SECRET: Optional[str] = None
+    PAPER_TRADE: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env",

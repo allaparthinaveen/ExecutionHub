@@ -4,6 +4,7 @@ from app.schemas.shannon import DeployStrategyRequest, PortfolioStatusResponse, 
 from app.services.shannon import ShannonService
 from app.services.broker import BrokerService
 from app.api.dependencies import get_db
+from app.core.config import settings
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -11,7 +12,13 @@ router = APIRouter()
 
 # Dependency to get ShannonService
 def get_shannon_service(db: Session = Depends(get_db)) -> ShannonService:
-    broker = BrokerService(api_key="mock", client_code="mock", password="mock", totp_secret="mock")
+    broker = BrokerService(
+        api_key=settings.ANGEL_ONE_API_KEY,
+        client_code=settings.ANGEL_ONE_CLIENT_CODE,
+        password=settings.ANGEL_ONE_PASSWORD,
+        totp_secret=settings.ANGEL_ONE_TOTP_SECRET,
+        paper_trade=settings.PAPER_TRADE
+    )
     return ShannonService(broker=broker, db=db)
 
 @router.get("/portfolio", response_model=PortfolioStatusResponse)
