@@ -3,15 +3,16 @@ from typing import List
 from app.schemas.shannon import DeployStrategyRequest, PortfolioStatusResponse, TradeAction
 from app.services.shannon import ShannonService
 from app.services.broker import BrokerService
+from app.api.dependencies import get_db
+from sqlalchemy.orm import Session
 from datetime import datetime
 
 router = APIRouter()
 
-# Dependency to get ShannonService (Ideally injected from DI container or connection pool)
-def get_shannon_service() -> ShannonService:
-    # Dummy broker instantiation for now
+# Dependency to get ShannonService
+def get_shannon_service(db: Session = Depends(get_db)) -> ShannonService:
     broker = BrokerService(api_key="mock", client_code="mock", password="mock", totp_secret="mock")
-    return ShannonService(broker=broker)
+    return ShannonService(broker=broker, db=db)
 
 @router.get("/portfolio", response_model=PortfolioStatusResponse)
 async def get_portfolio(service: ShannonService = Depends(get_shannon_service)):
@@ -22,27 +23,9 @@ async def deploy_strategy(request: DeployStrategyRequest, service: ShannonServic
     return await service.deploy_strategy(request)
 
 @router.get("/history", response_model=List[TradeAction])
-async def get_history():
-    # Returning dummy data as per prompt
-    return [
-        TradeAction(
-            date=datetime.now(),
-            action="SELL",
-            asset="GOLDBEES-EQ",
-            qty=12,
-            price=71.50,
-            reason="Drift exceeded 5%"
-        ),
-        TradeAction(
-            date=datetime.now(),
-            action="BUY",
-            asset="NIFTYBEES-EQ",
-            qty=3,
-            price=270.25,
-            reason="Drift exceeded 5%"
-        )
-    ]
+async def get_history(service: ShannonService = Depends(get_shannon_service)):
+    return await service.get_history()
 
 @router.post("/rebalance")
-async def trigger_rebalance():
-    return {"message": "Rebalance triggered", "actions": []}
+async def trigger_rebalance(service: ShannonService = Depends(get_shannon_service)):
+    return await service.trigger_rebalance()
