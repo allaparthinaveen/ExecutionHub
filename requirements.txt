@@ -11,3 +11,4 @@ smartapi-python
 pyotp
 yfinance
 logzero
+websocket-client
