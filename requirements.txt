@@ -12,3 +12,4 @@ pyotp
 yfinance
 logzero
 websocket-client
+pyjwt==2.8.0

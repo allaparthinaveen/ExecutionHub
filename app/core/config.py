@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     
     # Authentication (If verifying tokens directly)
     SECRET_KEY: str = "super_secret_key"
+    JWT_ALGORITHM: str = "HS256"
+    API_KEY: Optional[str] = "super_secret_api_key"
     
     # Angel One (Broker API Defaults)
     ANGEL_ONE_API_KEY: Optional[str] = None

@@ -8,11 +8,10 @@ from app.services.broker import BrokerService
 logger = logging.getLogger("tradeservices.shannon")
 
 class ShannonService:
-    def __init__(self, broker: BrokerService, db: Session):
+    def __init__(self, broker: BrokerService, db: Session, user_id: str = "default_user"):
         self.broker = broker
         self.db = db
-        # For MVP, we use a single hardcoded user. In a real app, pass current_user_id to methods.
-        self.user_id = "default_user"
+        self.user_id = user_id
 
     async def get_portfolio_status(self) -> PortfolioStatusResponse:
         logger.info("Fetching portfolio status")
@@ -241,3 +240,18 @@ class ShannonService:
             "message": "Rebalance executed successfully.",
             "actions": actions_taken
         }
+
+    async def rebalance_all_active_strategies(self) -> dict:
+        """Runs the drift check and executes rebalancing for all active strategies."""
+        logger.info("Triggering automated rebalance check for all active strategies...")
+        active_configs = self.db.query(ShannonConfig).filter(
+            ShannonConfig.is_active == True
+        ).all()
+        
+        results = []
+        for config in active_configs:
+            user_service = ShannonService(broker=self.broker, db=self.db, user_id=config.user_id)
+            res = await user_service.trigger_rebalance()
+            results.append({"user_id": config.user_id, "result": res})
+            
+        return {"status": "success", "results": results}
