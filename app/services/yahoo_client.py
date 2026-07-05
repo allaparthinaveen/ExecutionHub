@@ -48,12 +48,13 @@ class YahooFinanceClient:
         try:
             info = cls._fetch_ticker_info(ticker_obj)
             if not info or not isinstance(info, dict):
-                raise ValueError("Yahoo Finance returned empty or invalid metadata.")
+                logger.warning(f"Yahoo Finance returned empty or invalid metadata for {symbol}; using empty fallback.")
+                info = {}
             info_cache[symbol] = info
             return info
         except Exception as e:
-            logger.error(f"Failed to fetch info for {symbol} after retries: {e}")
-            raise
+            logger.warning(f"Failed to fetch info for {symbol}; returning empty fallback: {e}")
+            return {}
 
     @classmethod
     def get_ticker_statements(cls, ticker_symbol: str) -> Dict[str, pd.DataFrame]:
@@ -151,6 +152,39 @@ class YahooFinanceClient:
             "dividend_yield": cls.extract_float_metric(info, ["dividendYield"]),
             "dividend_rate": cls.extract_float_metric(info, ["dividendRate"])
         }
+        
+        # Fallback to fast_info if info is empty/missing
+        ticker_obj = get_yf_ticker(symbol)
+        
+        # Current Price fallback
+        if normalized["current_price"] is None:
+            try:
+                normalized["current_price"] = ticker_obj.fast_info.last_price
+            except Exception:
+                pass
+                
+        # Market Cap fallback
+        if normalized["market_cap"] is None:
+            try:
+                normalized["market_cap"] = ticker_obj.fast_info.market_cap
+            except Exception:
+                pass
+                
+        # Shares Outstanding
+        shares_outstanding = cls.extract_float_metric(info, ["sharesOutstanding"])
+        if shares_outstanding is None:
+            try:
+                shares_outstanding = ticker_obj.fast_info.shares
+            except Exception:
+                pass
+        normalized["shares_outstanding"] = shares_outstanding
+        
+        # Currency fallback
+        if normalized["currency"] == "USD" or not normalized["currency"]:
+            try:
+                normalized["currency"] = ticker_obj.fast_info.currency or "USD"
+            except Exception:
+                pass
         
         # 2. Extract Balance Sheet items
         # Current Assets
@@ -292,6 +326,25 @@ class YahooFinanceClient:
         # Sort EPS history by year ascending
         eps_history.sort(key=lambda x: x["year"])
         normalized["eps_history"] = eps_history
+        
+        # Calculated fallbacks if info was missing
+        # Price to Book fallback
+        if normalized["price_to_book"] is None and normalized["current_price"] and normalized.get("stockholders_equity") and normalized.get("shares_outstanding"):
+            try:
+                bvps = normalized["stockholders_equity"] / normalized["shares_outstanding"]
+                if bvps > 0:
+                    normalized["price_to_book"] = normalized["current_price"] / bvps
+            except Exception:
+                pass
+                
+        # Trailing PE fallback
+        if normalized["trailing_pe"] is None and normalized["current_price"] and eps_history:
+            try:
+                latest_eps = eps_history[-1].get("eps")
+                if latest_eps and latest_eps > 0:
+                    normalized["trailing_pe"] = normalized["current_price"] / latest_eps
+            except Exception:
+                pass
         
         # Include raw data context for debug/transparency
         normalized["_raw_info"] = info
