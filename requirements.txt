@@ -13,3 +13,5 @@ yfinance
 logzero
 websocket-client
 pyjwt==2.8.0
+cachetools==5.3.3
+tenacity==8.3.0

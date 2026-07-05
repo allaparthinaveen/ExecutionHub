@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.core.exceptions import BrokerAPIException, global_exception_handler, broker_exception_handler
-from app.api.routes import health, shannon
+from app.api.routes import health, shannon, valuation, fundamentals
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -25,6 +25,8 @@ app.add_exception_handler(BrokerAPIException, broker_exception_handler)
 # Include Routers
 app.include_router(health.router, prefix=f"{settings.API_V1_STR}", tags=["health"])
 app.include_router(shannon.router, prefix=f"{settings.API_V1_STR}/shannon", tags=["shannon"])
+app.include_router(valuation.router, prefix=f"{settings.API_V1_STR}/valuation", tags=["valuation"])
+app.include_router(fundamentals.router, prefix=f"{settings.API_V1_STR}/fundamentals", tags=["fundamentals"])
 
 @app.get("/")
 def root():
