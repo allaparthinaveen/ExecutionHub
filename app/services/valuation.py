@@ -1,8 +1,8 @@
 import logging
 import math
-import yfinance as yf
 import pandas as pd
 from typing import List, Dict, Any, Optional
+from cachetools import TTLCache
 from app.schemas.valuation import (
     ScreenerCandidate,
     DiscountRateDetails,
@@ -10,6 +10,9 @@ from app.schemas.valuation import (
     FCFFForecastYear,
     ValuationResponse
 )
+from app.services.yahoo_client import get_yf_ticker, YahooFinanceClient
+
+rf_cache = TTLCache(maxsize=5, ttl=1800)
 
 logger = logging.getLogger("tradeservices.valuation")
 
@@ -24,14 +27,18 @@ class ValuationService:
     @staticmethod
     def _get_risk_free_rate() -> float:
         """Fetch 10-year US Treasury yield (^TNX) as proxy for Risk-Free Rate."""
+        if "yield" in rf_cache:
+            return rf_cache["yield"]
         try:
-            tnx = yf.Ticker("^TNX")
+            tnx = get_yf_ticker("^TNX")
             hist = tnx.history(period="1d")
             if not hist.empty:
                 # Yield is returned as percentage, e.g. 4.25 meaning 4.25%
                 val = float(hist['Close'].iloc[-1])
                 if 0.0 < val < 20.0:
-                    return val / 100.0
+                    rf_rate = val / 100.0
+                    rf_cache["yield"] = rf_rate
+                    return rf_rate
         except Exception as e:
             logger.warning(f"Failed to fetch Risk-Free Rate from ^TNX: {e}. Falling back to default.")
         return 0.04  # Default 4%
@@ -42,8 +49,11 @@ class ValuationService:
         for symbol in tickers:
             symbol = symbol.strip().upper()
             try:
-                ticker = yf.Ticker(symbol)
-                info = ticker.info
+                info = YahooFinanceClient.get_ticker_info(symbol)
+                statements = YahooFinanceClient.get_ticker_statements(symbol)
+                fin = statements["financials"]
+                bs = statements["balance_sheet"]
+                cf = statements["cashflow"]
                 
                 # Extract simple metrics
                 beta = cls._fetch_clean_metric(info, 'beta', 1.0)
@@ -57,7 +67,6 @@ class ValuationService:
                 else:
                     # Fallback to cashflow statement
                     try:
-                        cf = ticker.cashflow
                         if 'Free Cash Flow' in cf.index and not cf.empty:
                             fcf_val = cf.loc['Free Cash Flow'].iloc[0]
                             if mcap and mcap > 0:
@@ -75,7 +84,6 @@ class ValuationService:
                 else:
                     # Fallback to balance sheet
                     try:
-                        bs = ticker.balance_sheet
                         total_debt = bs.loc['Total Debt'].iloc[0] if 'Total Debt' in bs.index else 0
                         equity = bs.loc['Stockholders Equity'].iloc[0] if 'Stockholders Equity' in bs.index else 1
                         if equity != 0:
@@ -91,7 +99,6 @@ class ValuationService:
                 # Compute operating margin trend
                 margin_trend = 0.0
                 try:
-                    fin = ticker.financials
                     if 'Total Revenue' in fin.index and 'Operating Income' in fin.index:
                         revs = fin.loc['Total Revenue']
                         op_inc = fin.loc['Operating Income']
@@ -167,17 +174,15 @@ class ValuationService:
         if overrides is None:
             overrides = {}
             
-        ticker = yf.Ticker(symbol)
-        info = ticker.info
+        info = YahooFinanceClient.get_ticker_info(symbol)
+        statements = YahooFinanceClient.get_ticker_statements(symbol)
+        fin = statements["financials"]
+        bs = statements["balance_sheet"]
+        cf = statements["cashflow"]
         
         # 1. Pull dynamic inputs / statements
         current_price = cls._fetch_clean_metric(info, 'currentPrice', 100.0)
         shares_outstanding = cls._fetch_clean_metric(info, 'sharesOutstanding', 1.0e6)
-        
-        # Fetch statements
-        fin = ticker.financials
-        bs = ticker.balance_sheet
-        cf = ticker.cashflow
         
         # 2. Part 1: Discount Rate (WACC) via CAPM
         rf = overrides.get('risk_free_rate_override')

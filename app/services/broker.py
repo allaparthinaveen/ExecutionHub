@@ -1,7 +1,7 @@
 import logging
 from typing import Optional
 import pyotp
-import yfinance as yf
+from app.services.yahoo_client import get_yf_ticker
 from SmartApi import SmartConnect
 
 logger = logging.getLogger("tradeservices.broker")
@@ -76,7 +76,7 @@ class BrokerService:
         try:
             yf_symbol = symbol.replace('-EQ', '') + '.NS'
             logger.debug(f"Fetching price for {yf_symbol} from yfinance")
-            ticker = yf.Ticker(yf_symbol)
+            ticker = get_yf_ticker(yf_symbol)
             data = ticker.history(period="1d")
             if not data.empty:
                 return float(data['Close'].iloc[-1])

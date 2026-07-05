@@ -1,5 +1,6 @@
 import logging
 import math
+import requests
 import yfinance as yf
 import pandas as pd
 from typing import Dict, Any, List, Optional
@@ -11,6 +12,9 @@ logger = logging.getLogger("tradeservices.yahoo_client")
 # Thread-safe in-memory cache for ticker info (TTL of 10 minutes, max size 100 tickers)
 info_cache = TTLCache(maxsize=100, ttl=600)
 statements_cache = TTLCache(maxsize=100, ttl=600)
+
+def get_yf_ticker(symbol: str) -> yf.Ticker:
+    return yf.Ticker(symbol)
 
 class YahooFinanceClient:
     """
@@ -40,7 +44,7 @@ class YahooFinanceClient:
             return info_cache[symbol]
             
         logger.info(f"Fetching fresh info from yfinance for {symbol}")
-        ticker_obj = yf.Ticker(symbol)
+        ticker_obj = get_yf_ticker(symbol)
         try:
             info = cls._fetch_ticker_info(ticker_obj)
             info_cache[symbol] = info
@@ -59,7 +63,7 @@ class YahooFinanceClient:
             return statements_cache[symbol]
             
         logger.info(f"Fetching fresh financial statements from yfinance for {symbol}")
-        ticker_obj = yf.Ticker(symbol)
+        ticker_obj = get_yf_ticker(symbol)
         
         try:
             # yfinance properties are lazy-loaded, fetch them explicitly
