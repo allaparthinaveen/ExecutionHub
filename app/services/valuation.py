@@ -19,6 +19,8 @@ logger = logging.getLogger("tradeservices.valuation")
 class ValuationService:
     @staticmethod
     def _fetch_clean_metric(info: Dict[str, Any], key: str, default: float) -> float:
+        if not info:
+            return default
         val = info.get(key)
         if val is None or math.isnan(val) if isinstance(val, float) else False:
             return default

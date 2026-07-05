@@ -47,6 +47,8 @@ class YahooFinanceClient:
         ticker_obj = get_yf_ticker(symbol)
         try:
             info = cls._fetch_ticker_info(ticker_obj)
+            if not info or not isinstance(info, dict):
+                raise ValueError("Yahoo Finance returned empty or invalid metadata.")
             info_cache[symbol] = info
             return info
         except Exception as e:
