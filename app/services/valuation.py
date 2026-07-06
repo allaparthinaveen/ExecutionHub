@@ -16,6 +16,14 @@ rf_cache = TTLCache(maxsize=5, ttl=1800)
 
 logger = logging.getLogger("tradeservices.valuation")
 
+def safe_float(val, default: float = 0.0) -> float:
+    if val is None or (isinstance(val, float) and math.isnan(val)):
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
 class ValuationService:
     @staticmethod
     def _fetch_clean_metric(info: Dict[str, Any], key: str, default: float) -> float:
@@ -202,8 +210,8 @@ class ValuationService:
         tax_rate = overrides.get('tax_rate_override')
         if tax_rate is None:
             try:
-                tax_provision = float(fin.loc['Tax Provision'].iloc[0]) if 'Tax Provision' in fin.index else 0.0
-                pretax_income = float(fin.loc['Pretax Income'].iloc[0]) if 'Pretax Income' in fin.index else 0.0
+                tax_provision = safe_float(fin.loc['Tax Provision'].iloc[0]) if 'Tax Provision' in fin.index else 0.0
+                pretax_income = safe_float(fin.loc['Pretax Income'].iloc[0]) if 'Pretax Income' in fin.index else 0.0
                 if pretax_income > 0 and tax_provision > 0:
                     tax_rate = min(0.35, max(0.0, tax_provision / pretax_income))
                 else:
@@ -215,8 +223,8 @@ class ValuationService:
         if cost_of_debt is None:
             # Estimate from interest coverage
             try:
-                ebit = float(fin.loc['EBIT'].iloc[0]) if 'EBIT' in fin.index else 0.0
-                interest = float(fin.loc['Interest Expense'].iloc[0]) if 'Interest Expense' in fin.index else 0.0
+                ebit = safe_float(fin.loc['EBIT'].iloc[0]) if 'EBIT' in fin.index else 0.0
+                interest = safe_float(fin.loc['Interest Expense'].iloc[0]) if 'Interest Expense' in fin.index else 0.0
                 interest = abs(interest)
                 if interest > 0 and ebit > 0:
                     icr = ebit / interest
@@ -240,12 +248,12 @@ class ValuationService:
         # Debt to Equity Weights
         debt_to_equity = info.get('debtToEquity')
         if debt_to_equity is not None:
-            debt_to_equity = float(debt_to_equity) / 100.0
+            debt_to_equity = safe_float(debt_to_equity) / 100.0
         else:
             try:
                 total_debt = bs.loc['Total Debt'].iloc[0] if 'Total Debt' in bs.index else 0.0
                 equity = bs.loc['Stockholders Equity'].iloc[0] if 'Stockholders Equity' in bs.index else 1.0
-                debt_to_equity = float(total_debt) / float(equity) if equity != 0 else 0.3
+                debt_to_equity = safe_float(total_debt) / safe_float(equity) if safe_float(equity) != 0 else 0.3
             except Exception:
                 debt_to_equity = 0.3
         
@@ -263,7 +271,7 @@ class ValuationService:
         # A. Fundamental Reinvestment Rate & ROC
         ebit = 0.0
         if 'EBIT' in fin.index and not fin.empty:
-            ebit = float(fin.loc['EBIT'].iloc[0])
+            ebit = safe_float(fin.loc['EBIT'].iloc[0])
             
         # Reinvestment rate
         try:
@@ -302,8 +310,8 @@ class ValuationService:
         try:
             if 'Total Revenue' in fin.index and len(fin.loc['Total Revenue']) >= 2:
                 revs = fin.loc['Total Revenue']
-                latest_rev = float(revs.iloc[0])
-                earliest_rev = float(revs.iloc[-1])
+                latest_rev = safe_float(revs.iloc[0])
+                earliest_rev = safe_float(revs.iloc[-1])
                 years = len(revs) - 1
                 if earliest_rev > 0 and latest_rev > 0:
                     historical_revenue_cagr = (latest_rev / earliest_rev) ** (1.0 / years) - 1.0
@@ -323,10 +331,10 @@ class ValuationService:
             fcff_0 = ebit * (1.0 - tax_rate) * (1.0 - reinvestment_rate)
             if fcff_0 <= 0:
                 # If negative, fallback to FCF margin of Revenue (default 8%)
-                rev_latest = float(fin.loc['Total Revenue'].iloc[0]) if 'Total Revenue' in fin.index else 1000.0
+                rev_latest = safe_float(fin.loc['Total Revenue'].iloc[0]) if 'Total Revenue' in fin.index else 1000.0
                 fcff_0 = max(1.0, rev_latest * 0.08)
         except Exception:
-            rev_latest = float(fin.loc['Total Revenue'].iloc[0]) if 'Total Revenue' in fin.index else 1000.0
+            rev_latest = safe_float(fin.loc['Total Revenue'].iloc[0]) if 'Total Revenue' in fin.index else 1000.0
             fcff_0 = rev_latest * 0.08
 
         # Years 1 to 5 Forecast
@@ -364,14 +372,14 @@ class ValuationService:
         
         # Cash and Debt
         try:
-            cash = float(bs.loc['Cash Cash Equivalents And Short Term Investments'].iloc[0]) if 'Cash Cash Equivalents And Short Term Investments' in bs.index else 0.0
+            cash = safe_float(bs.loc['Cash Cash Equivalents And Short Term Investments'].iloc[0]) if 'Cash Cash Equivalents And Short Term Investments' in bs.index else 0.0
             if cash == 0.0 and 'Cash And Cash Equivalents' in bs.index:
-                cash = float(bs.loc['Cash And Cash Equivalents'].iloc[0])
+                cash = safe_float(bs.loc['Cash And Cash Equivalents'].iloc[0])
         except Exception:
             cash = 0.0
             
         try:
-            debt = float(bs.loc['Total Debt'].iloc[0]) if 'Total Debt' in bs.index else 0.0
+            debt = safe_float(bs.loc['Total Debt'].iloc[0]) if 'Total Debt' in bs.index else 0.0
         except Exception:
             debt = 0.0
             
