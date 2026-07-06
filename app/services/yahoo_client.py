@@ -50,11 +50,41 @@ class YahooFinanceClient:
             if not info or not isinstance(info, dict):
                 logger.warning(f"Yahoo Finance returned empty or invalid metadata for {symbol}; using empty fallback.")
                 info = {}
+            else:
+                info = dict(info)
+            
+            # Enrich with fast_info
+            try:
+                fast = ticker_obj.fast_info
+                if not info.get("currentPrice"):
+                    info["currentPrice"] = fast.last_price
+                if not info.get("marketCap"):
+                    info["marketCap"] = fast.market_cap
+                if not info.get("sharesOutstanding"):
+                    info["sharesOutstanding"] = fast.shares
+                if not info.get("currency"):
+                    info["currency"] = fast.currency
+                if not info.get("longName") and not info.get("shortName"):
+                    info["longName"] = symbol
+            except Exception as fe:
+                logger.warning(f"Failed to enrich with fast_info for {symbol}: {fe}")
+                
             info_cache[symbol] = info
             return info
         except Exception as e:
             logger.warning(f"Failed to fetch info for {symbol}; returning empty fallback: {e}")
-            return {}
+            fallback_info = {}
+            try:
+                fast = ticker_obj.fast_info
+                fallback_info["currentPrice"] = fast.last_price
+                fallback_info["marketCap"] = fast.market_cap
+                fallback_info["sharesOutstanding"] = fast.shares
+                fallback_info["currency"] = fast.currency
+                fallback_info["longName"] = symbol
+            except Exception as fe:
+                logger.warning(f"Failed to build fallback info from fast_info for {symbol}: {fe}")
+            info_cache[symbol] = fallback_info
+            return fallback_info
 
     @classmethod
     def get_ticker_statements(cls, ticker_symbol: str) -> Dict[str, pd.DataFrame]:
