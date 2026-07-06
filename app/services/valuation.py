@@ -30,9 +30,7 @@ class ValuationService:
         if not info:
             return default
         val = info.get(key)
-        if val is None or math.isnan(val) if isinstance(val, float) else False:
-            return default
-        return float(val)
+        return safe_float(val, default)
 
     @staticmethod
     def _get_risk_free_rate() -> float:
