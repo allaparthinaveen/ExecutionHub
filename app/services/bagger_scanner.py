@@ -14,6 +14,7 @@ from app.schemas.bagger import (
     YearlyMetric
 )
 from app.services.yahoo_client import YahooFinanceClient, get_yf_ticker
+from bs4 import BeautifulSoup
 
 logger = logging.getLogger("tradeservices.bagger_scanner")
 
@@ -80,6 +81,172 @@ class BaggerScannerService:
             return round(cagr, 2)
         except Exception:
             return None
+
+    @classmethod
+    def scrape_screener_in(cls, symbol: str) -> Dict[str, Any]:
+        """
+        Scrape Screener.in consolidated page for an Indian stock ticker.
+        Returns parsed fundamentals dictionary of metrics.
+        """
+        # Clean ticker (e.g. DELHIVERY.NS -> DELHIVERY)
+        clean_symbol = symbol.split(".")[0].upper()
+        url = f"https://www.screener.in/company/{clean_symbol}/"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        data = {}
+        try:
+            logger.info(f"Scraping Screener.in Consolidated view for {clean_symbol}...")
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code != 200:
+                logger.warning(f"Screener.in returned status code {res.status_code} for {clean_symbol}")
+                return data
+                
+            soup = BeautifulSoup(res.text, "html.parser")
+            
+            # 1. Parse top ratios cards
+            ratio_items = soup.find_all("li", class_="flex")
+            for li in ratio_items:
+                text = li.text.strip().replace("\n", "")
+                normalized_text = " ".join(text.split())
+                if "Market Cap" in normalized_text:
+                    try:
+                        val_str = normalized_text.split("₹")[-1].split("Cr.")[0].strip().replace(",", "")
+                        data["market_cap"] = float(val_str) * 1e7 # convert Crore to absolute INR
+                    except Exception:
+                        pass
+                elif "Current Price" in normalized_text:
+                    try:
+                        val_str = normalized_text.split("₹")[-1].strip().replace(",", "")
+                        data["current_price"] = float(val_str)
+                    except Exception:
+                        pass
+                elif "Stock P/E" in normalized_text:
+                    try:
+                        val_str = normalized_text.split("Stock P/E")[-1].strip().replace(",", "")
+                        data["trailing_pe"] = float(val_str)
+                    except Exception:
+                        pass
+                elif "Book Value" in normalized_text:
+                    try:
+                        val_str = normalized_text.split("₹")[-1].strip().replace(",", "")
+                        data["book_value"] = float(val_str)
+                    except Exception:
+                        pass
+                elif "ROE" in normalized_text:
+                    try:
+                        val_str = normalized_text.split("ROE")[-1].split("%")[0].strip().replace(",", "")
+                        data["roe"] = float(val_str)
+                    except Exception:
+                        pass
+                        
+            # 2. Parse P&L Table (Revenue, EPS)
+            pl_section = soup.find("section", id="profit-loss")
+            if pl_section:
+                header_row = pl_section.find("tr")
+                years = []
+                if header_row:
+                    for th in header_row.find_all("th")[1:]:
+                        text = th.text.strip()
+                        try:
+                            year = int(text.split()[-1])
+                            years.append(year)
+                        except Exception:
+                            years.append(None)
+                            
+                for row in pl_section.find_all("tr"):
+                    cells = row.find_all("td")
+                    if not cells:
+                        continue
+                    row_label = cells[0].text.strip().lower()
+                    
+                    if "sales" in row_label:
+                        rev_history = []
+                        for yr, td in zip(years, cells[1:]):
+                            val_str = td.text.strip().replace(",", "")
+                            try:
+                                val = float(val_str) * 1e7
+                                if yr is not None and val > 0:
+                                    rev_history.append({"year": yr, "value": val})
+                            except Exception:
+                                pass
+                        data["revenue_history"] = rev_history
+                    elif "eps" in row_label:
+                        eps_history = []
+                        for yr, td in zip(years, cells[1:]):
+                            val_str = td.text.strip().replace(",", "")
+                            try:
+                                val = float(val_str)
+                                if yr is not None:
+                                    eps_history.append({"year": yr, "value": val})
+                            except Exception:
+                                pass
+                        data["eps_history"] = eps_history
+                        
+            # 3. Parse Balance Sheet Table (Debt, Reserves, Capital)
+            bs_section = soup.find("section", id="balance-sheet")
+            if bs_section:
+                borrowings_list = []
+                reserves_list = []
+                equity_capital_list = []
+                
+                for row in bs_section.find_all("tr"):
+                    cells = row.find_all("td")
+                    if not cells:
+                        continue
+                    row_label = cells[0].text.strip().lower()
+                    
+                    if "borrowings" in row_label:
+                        for td in cells[1:]:
+                            val_str = td.text.strip().replace(",", "")
+                            try:
+                                borrowings_list.append(float(val_str) * 1e7)
+                            except Exception:
+                                borrowings_list.append(0.0)
+                    elif "reserves" in row_label:
+                        for td in cells[1:]:
+                            val_str = td.text.strip().replace(",", "")
+                            try:
+                                reserves_list.append(float(val_str) * 1e7)
+                            except Exception:
+                                reserves_list.append(0.0)
+                    elif "equity capital" in row_label or "share capital" in row_label:
+                        for td in cells[1:]:
+                            val_str = td.text.strip().replace(",", "")
+                            try:
+                                equity_capital_list.append(float(val_str) * 1e7)
+                            except Exception:
+                                equity_capital_list.append(0.0)
+                                
+                if borrowings_list and (reserves_list or equity_capital_list):
+                    latest_borrowings = borrowings_list[-1]
+                    latest_equity = 0.0
+                    if reserves_list:
+                        latest_equity += reserves_list[-1]
+                    if equity_capital_list:
+                        latest_equity += equity_capital_list[-1]
+                    if latest_equity > 0:
+                        data["debt_to_equity"] = latest_borrowings / latest_equity
+                        
+            # 4. Parse Shareholding Pattern Table (Promoter Holding)
+            sh_section = soup.find("section", id="shareholding")
+            if sh_section:
+                for row in sh_section.find_all("tr"):
+                    cells = row.find_all("td")
+                    if not cells:
+                        continue
+                    row_label = cells[0].text.strip().lower()
+                    if "promoter" in row_label or "promoters" in row_label:
+                        try:
+                            latest_holding_str = cells[-1].text.strip().replace("%", "")
+                            data["promoter_holding"] = float(latest_holding_str)
+                        except Exception:
+                            pass
+        except Exception as e:
+            logger.error(f"Error scraping Screener.in for {clean_symbol}: {e}")
+            
+        return data
 
     @classmethod
     def get_stock_metrics(cls, symbol: str) -> StockMetrics:
@@ -156,6 +323,31 @@ class BaggerScannerService:
                 if yr is not None and val is not None:
                     eps_history.append(YearlyMetric(year=int(yr), value=float(val)))
                     
+        # Check if we should scrape Screener.in as a secondary source fallback for Indian stocks
+        is_indian_stock = yf_symbol.endswith(".NS") or yf_symbol.endswith(".BO")
+        if is_indian_stock and (not revenue_history or market_cap is None or roe is None or promoter_holding is None or debt_to_equity is None):
+            logger.info(f"Yfinance data incomplete for Indian stock {yf_symbol}; querying Screener.in fallback...")
+            screener_data = cls.scrape_screener_in(yf_symbol)
+            if screener_data:
+                if market_cap is None and "market_cap" in screener_data:
+                    market_cap = screener_data["market_cap"]
+                if current_price is None and "current_price" in screener_data:
+                    current_price = screener_data["current_price"]
+                if trailing_pe is None and "trailing_pe" in screener_data:
+                    trailing_pe = screener_data["trailing_pe"]
+                if roe is None and "roe" in screener_data:
+                    roe = screener_data["roe"]
+                if promoter_holding is None and "promoter_holding" in screener_data:
+                    promoter_holding = screener_data["promoter_holding"]
+                if debt_to_equity is None and "debt_to_equity" in screener_data:
+                    debt_to_equity = screener_data["debt_to_equity"]
+                if not revenue_history and "revenue_history" in screener_data:
+                    for item in screener_data["revenue_history"]:
+                        revenue_history.append(YearlyMetric(year=item["year"], value=item["value"]))
+                if not eps_history and "eps_history" in screener_data:
+                    for item in screener_data["eps_history"]:
+                        eps_history.append(YearlyMetric(year=item["year"], value=item["value"]))
+                        
         return StockMetrics(
             ticker=yf_symbol,
             company_name=info.get("longName") or info.get("shortName") or symbol,
