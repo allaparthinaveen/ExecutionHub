@@ -57,8 +57,12 @@ async def run_daily_scan():
         total_symbols = len(nse_symbols)
         logger.info(f"Scanning all {total_symbols} equities in batches of {batch_size}...")
         
-        processed_count = 0
-        success_count = 0
+        # Stats counters
+        stocks_fetched = len(nse_symbols)
+        stocks_scanned = 0
+        stocks_updated = 0
+        stocks_created = 0
+        stocks_failed = 0
         
         for i in range(0, total_symbols, batch_size):
             batch = nse_symbols[i:i+batch_size]
@@ -75,6 +79,12 @@ async def run_daily_scan():
                 
                 # 3. Upsert results into database
                 for cand in candidates:
+                    if cand.ticker in query_failures:
+                        stocks_failed += 1
+                        continue
+                        
+                    stocks_scanned += 1
+                    
                     # Convert checklist items and details to json-serializable format
                     checks_json = [check.model_dump() for check in cand.checks]
                     
@@ -93,6 +103,7 @@ async def run_daily_scan():
                         db_record.warnings = cand.warnings
                         db_record.missing_fields = cand.missing_fields
                         db_record.explanation = cand.explanation
+                        stocks_updated += 1
                     else:
                         # Create new row
                         new_record = NSEBaggerScanResult(
@@ -109,13 +120,12 @@ async def run_daily_scan():
                             explanation=cand.explanation
                         )
                         db.add(new_record)
+                        stocks_created += 1
                 
                 # Commit batch
                 db.commit()
-                processed_count += len(batch)
-                success_count += (len(batch) - len(query_failures))
                 
-                logger.info(f"Batch completed. Cumulative processed: {processed_count}/{total_symbols}. Active success: {success_count}.")
+                logger.info(f"Batch completed. Cumulative processed: {stocks_scanned + stocks_failed}/{total_symbols}.")
                 
                 # Soft sleep between batches to preserve API rate-limits
                 await asyncio.sleep(1.0)
@@ -125,8 +135,18 @@ async def run_daily_scan():
                 db.rollback()
                 
         elapsed = time.time() - start_time
+        summary_msg = f"""
+=============================SCAN SCHEDULAR SUMMARY START=========================
+Number of stocks fetched - {stocks_fetched}
+Number of stocks scanned - {stocks_scanned}
+Number of stocks updated in DB - {stocks_updated}
+Number of stocks created in DB - {stocks_created}
+Number of stocks failed to scan - {stocks_failed}
+
+=============================SCAN SCHEDULAR SUMMARY END=========================
+"""
+        print(summary_msg)
         logger.info(f"NSE 100-Bagger Scanning Job completed in {elapsed:.2f} seconds!")
-        logger.info(f"Final Stats: Total processed: {processed_count}, Successfully evaluated: {success_count}")
         
     except Exception as e:
         logger.critical(f"Daily cron scanner crashed: {e}")
