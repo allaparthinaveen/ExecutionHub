@@ -25,6 +25,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger("nse_bagger.cron")
 
+import math
+from typing import Any
+
+def sanitize_for_json(val: Any) -> Any:
+    """
+    Recursively sanitize dictionaries, lists, and floats to ensure they are
+    fully JSON-compliant (i.e. converting Infinity, -Infinity, and NaN to None/null).
+    """
+    if isinstance(val, dict):
+        return {k: sanitize_for_json(v) for k, v in val.items()}
+    elif isinstance(val, list):
+        return [sanitize_for_json(v) for v in val]
+    elif isinstance(val, float):
+        if math.isinf(val) or math.isnan(val):
+            return None
+        return val
+    return val
+
 async def run_daily_scan():
     logger.info("Starting Daily NSE 100-Bagger Scanning Job...")
     start_time = time.time()
@@ -102,7 +120,8 @@ async def run_daily_scan():
                         stocks_insufficient_data += 1
                     
                     # Convert checklist items and details to json-serializable format
-                    checks_json = [check.model_dump() for check in cand.checks]
+                    checks_json = sanitize_for_json([check.model_dump() for check in cand.checks])
+                    metrics_json = sanitize_for_json(cand.metrics)
                     
                     # Look up existing row
                     db_record = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.ticker == cand.ticker).first()
@@ -114,7 +133,7 @@ async def run_daily_scan():
                         db_record.score = cand.score
                         db_record.pass_ratio = cand.pass_ratio
                         db_record.label = cand.label
-                        db_record.metrics = cand.metrics
+                        db_record.metrics = metrics_json
                         db_record.checks = checks_json
                         db_record.warnings = cand.warnings
                         db_record.missing_fields = cand.missing_fields
@@ -129,7 +148,7 @@ async def run_daily_scan():
                             score=cand.score,
                             pass_ratio=cand.pass_ratio,
                             label=cand.label,
-                            metrics=cand.metrics,
+                            metrics=metrics_json,
                             checks=checks_json,
                             warnings=cand.warnings,
                             missing_fields=cand.missing_fields,
