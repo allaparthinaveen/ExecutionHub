@@ -31,3 +31,24 @@ CREATE TABLE IF NOT EXISTS shannon_trade_history (
 
 -- Add index for trade history
 CREATE INDEX IF NOT EXISTS ix_shannon_trade_history_id ON shannon_trade_history (id);
+
+-- Create table for NSE 100-Bagger scanner results
+CREATE TABLE IF NOT EXISTS nse_bagger_scan_results (
+    id SERIAL PRIMARY KEY,
+    ticker VARCHAR UNIQUE NOT NULL,
+    company_name VARCHAR,
+    passed BOOLEAN DEFAULT FALSE,
+    score DOUBLE PRECISION DEFAULT 0.0,
+    pass_ratio DOUBLE PRECISION DEFAULT 0.0,
+    label VARCHAR,
+    metrics JSONB,
+    checks JSONB,
+    warnings JSONB,
+    missing_fields JSONB,
+    explanation TEXT,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS ix_nse_bagger_scan_results_ticker ON nse_bagger_scan_results (ticker);
+CREATE INDEX IF NOT EXISTS ix_nse_bagger_scan_results_score ON nse_bagger_scan_results (score);
+
