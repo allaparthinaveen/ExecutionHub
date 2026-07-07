@@ -96,7 +96,15 @@ class ScanRequest(BaseModel):
     config: Optional[BaggerFilterConfig] = Field(default_factory=BaggerFilterConfig)
     auto_limit: int = Field(
         20, 
-        description="If tickers list is empty, limits the automatically fetched symbols list size to the smallest N stocks."
+        description="If tickers list is empty and use_db is False, limits the automatically fetched symbols list size to the smallest N stocks."
+    )
+    use_db: bool = Field(
+        True, 
+        description="If True and tickers is empty, reads scanned candidates directly from the database scan results table."
+    )
+    filter_potentials: bool = Field(
+        True,
+        description="If True, returns only 'High Potential' and 'Moderate Potential' candidates from the database."
     )
 
 class ScanSummary(BaseModel):
