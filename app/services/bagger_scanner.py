@@ -105,6 +105,11 @@ class BaggerScannerService:
                 
             soup = BeautifulSoup(res.text, "html.parser")
             
+            # 0. Parse company name header
+            company_header = soup.find("h1")
+            if company_header:
+                data["company_name"] = company_header.text.strip()
+                
             # 1. Parse top ratios cards
             ratio_items = soup.find_all("li", class_="flex")
             for li in ratio_items:
@@ -275,6 +280,8 @@ class BaggerScannerService:
         if op_margin is not None:
             op_margin = op_margin * 100.0
             
+        company_name = info.get("longName") or info.get("shortName") or symbol
+            
         # Debt to Equity
         debt_to_equity = YahooFinanceClient.extract_float_metric(info, ["debtToEquity"])
         if debt_to_equity is not None:
@@ -329,6 +336,8 @@ class BaggerScannerService:
             logger.info(f"Yfinance data incomplete for Indian stock {yf_symbol}; querying Screener.in fallback...")
             screener_data = cls.scrape_screener_in(yf_symbol)
             if screener_data:
+                if "company_name" in screener_data and (company_name == symbol or company_name == yf_symbol):
+                    company_name = screener_data["company_name"]
                 if market_cap is None and "market_cap" in screener_data:
                     market_cap = screener_data["market_cap"]
                 if current_price is None and "current_price" in screener_data:
@@ -350,7 +359,7 @@ class BaggerScannerService:
                         
         return StockMetrics(
             ticker=yf_symbol,
-            company_name=info.get("longName") or info.get("shortName") or symbol,
+            company_name=company_name,
             currency=info.get("currency") or "INR",
             market_cap=market_cap,
             current_price=current_price,
