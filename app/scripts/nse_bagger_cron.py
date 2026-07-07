@@ -64,6 +64,12 @@ async def run_daily_scan():
         stocks_created = 0
         stocks_failed = 0
         
+        # Qualitative Screening Counters
+        stocks_high_potential = 0
+        stocks_moderate_potential = 0
+        stocks_low_potential = 0
+        stocks_insufficient_data = 0
+        
         for i in range(0, total_symbols, batch_size):
             batch = nse_symbols[i:i+batch_size]
             batch_tickers = [f"{sym}.NS" for sym in batch]
@@ -84,6 +90,16 @@ async def run_daily_scan():
                         continue
                         
                     stocks_scanned += 1
+                    
+                    # Track qualitative screening results
+                    if cand.label == "High Potential":
+                        stocks_high_potential += 1
+                    elif cand.label == "Moderate Potential":
+                        stocks_moderate_potential += 1
+                    elif cand.label == "Low Potential":
+                        stocks_low_potential += 1
+                    elif cand.label == "Insufficient Data":
+                        stocks_insufficient_data += 1
                     
                     # Convert checklist items and details to json-serializable format
                     checks_json = [check.model_dump() for check in cand.checks]
@@ -135,14 +151,33 @@ async def run_daily_scan():
                 db.rollback()
                 
         elapsed = time.time() - start_time
+        
+        # Performance speed calculations
+        avg_speed_ms = round((elapsed * 1000) / stocks_scanned, 1) if stocks_scanned > 0 else 0.0
+        minutes = int(elapsed // 60)
+        seconds = int(elapsed % 60)
+        time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+        
         summary_msg = f"""
 =============================SCAN SCHEDULAR SUMMARY START=========================
+[Core Scan Statistics]
 Number of stocks fetched - {stocks_fetched}
 Number of stocks scanned - {stocks_scanned}
-Number of stocks updated in DB - {stocks_updated}
-Number of stocks created in DB - {stocks_created}
 Number of stocks failed to scan - {stocks_failed}
 
+[Database Operations]
+Number of stocks updated in DB - {stocks_updated}
+Number of stocks created in DB - {stocks_created}
+
+[Quantitative Screening Results]
+High Potential Candidates (Passed 100-Bagger) - {stocks_high_potential}
+Moderate Potential Candidates - {stocks_moderate_potential}
+Low Potential Candidates - {stocks_low_potential}
+Insufficient Data Candidates (Skipped) - {stocks_insufficient_data}
+
+[Data Diagnostics & Performance]
+Total Elapsed Time - {time_str}
+Average Scan Speed - {avg_speed_ms} ms/stock
 =============================SCAN SCHEDULAR SUMMARY END=========================
 """
         print(summary_msg)
