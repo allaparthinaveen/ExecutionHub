@@ -617,3 +617,140 @@ class BaggerScannerService:
                 
         candidates.sort(key=lambda x: (x.score, x.pass_ratio), reverse=True)
         return candidates, query_failures, failed_screening, insufficient
+
+    @classmethod
+    async def run_background_scan(cls, limit: Optional[int] = None):
+        """
+        Runs the complete daily scan in a background thread/task and upserts results to DB.
+        """
+        from app.models.base import SessionLocal
+        from app.models.trading import NSEBaggerScanResult
+        import time
+        
+        logger.info("Starting Daily Background NSE 100-Bagger Scanning Job...")
+        start_time = time.time()
+        
+        db = SessionLocal()
+        try:
+            logger.info("Fetching active symbols registry from NSE...")
+            nse_symbols = cls.fetch_nse_symbols()
+            if limit:
+                logger.info(f"Limiting active scan list to top {limit} symbols for testing/validation.")
+                nse_symbols = nse_symbols[:limit]
+                
+            stocks_fetched = len(nse_symbols)
+            stocks_scanned = 0
+            stocks_updated = 0
+            stocks_created = 0
+            stocks_failed = 0
+            
+            stocks_high_potential = 0
+            stocks_moderate_potential = 0
+            stocks_low_potential = 0
+            stocks_insufficient_data = 0
+            
+            config = BaggerFilterConfig()
+            batch_size = 10
+            total_symbols = len(nse_symbols)
+            
+            for i in range(0, total_symbols, batch_size):
+                batch = nse_symbols[i:i+batch_size]
+                batch_tickers = [f"{sym}.NS" for sym in batch]
+                
+                try:
+                    candidates, query_failures, failed_list, insufficient_list = await cls.scan_universe(
+                        tickers=batch_tickers,
+                        config=config
+                    )
+                    
+                    for cand in candidates:
+                        if cand.ticker in query_failures:
+                            stocks_failed += 1
+                            continue
+                            
+                        stocks_scanned += 1
+                        if cand.label == "High Potential":
+                            stocks_high_potential += 1
+                        elif cand.label == "Moderate Potential":
+                            stocks_moderate_potential += 1
+                        elif cand.label == "Low Potential":
+                            stocks_low_potential += 1
+                        elif cand.label == "Insufficient Data":
+                            stocks_insufficient_data += 1
+                            
+                        checks_json = [check.model_dump() for check in cand.checks]
+                        db_record = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.ticker == cand.ticker).first()
+                        
+                        if db_record:
+                            db_record.company_name = cand.company_name
+                            db_record.passed = cand.passed
+                            db_record.score = cand.score
+                            db_record.pass_ratio = cand.pass_ratio
+                            db_record.label = cand.label
+                            db_record.metrics = cand.metrics
+                            db_record.checks = checks_json
+                            db_record.warnings = cand.warnings
+                            db_record.missing_fields = cand.missing_fields
+                            db_record.explanation = cand.explanation
+                            stocks_updated += 1
+                        else:
+                            new_record = NSEBaggerScanResult(
+                                ticker=cand.ticker,
+                                company_name=cand.company_name,
+                                passed=cand.passed,
+                                score=cand.score,
+                                pass_ratio=cand.pass_ratio,
+                                label=cand.label,
+                                metrics=cand.metrics,
+                                checks=checks_json,
+                                warnings=cand.warnings,
+                                missing_fields=cand.missing_fields,
+                                explanation=cand.explanation
+                            )
+                            db.add(new_record)
+                            stocks_created += 1
+                    
+                    db.commit()
+                    logger.info(f"Background Batch completed. Cumulative processed: {stocks_scanned + stocks_failed}/{total_symbols}.")
+                    await asyncio.sleep(1.0)
+                    
+                except Exception as batch_err:
+                    logger.error(f"Error executing background batch starting at index {i}: {batch_err}")
+                    db.rollback()
+                    
+            elapsed = time.time() - start_time
+            avg_speed_ms = round((elapsed * 1000) / stocks_scanned, 1) if stocks_scanned > 0 else 0.0
+            minutes = int(elapsed // 60)
+            seconds = int(elapsed % 60)
+            time_str = f"{minutes}m {seconds}s" if minutes > 0 else f"{seconds}s"
+            
+            summary_msg = f"""
+=============================SCAN SCHEDULER SUMMARY START=========================
+[Core Scan Statistics]
+Number of stocks fetched - {stocks_fetched}
+Number of stocks scanned - {stocks_scanned}
+Number of stocks failed to scan - {stocks_failed}
+
+[Database Operations]
+Number of stocks updated in DB - {stocks_updated}
+Number of stocks created in DB - {stocks_created}
+
+[Quantitative Screening Results]
+High Potential Candidates (Passed 100-Bagger) - {stocks_high_potential}
+Moderate Potential Candidates - {stocks_moderate_potential}
+Low Potential Candidates - {stocks_low_potential}
+Insufficient Data Candidates (Skipped) - {stocks_insufficient_data}
+
+[Data Diagnostics & Performance]
+Total Elapsed Time - {time_str}
+Average Scan Speed - {avg_speed_ms} ms/stock
+=============================SCAN SCHEDULER SUMMARY END===========================
+"""
+            print(summary_msg)
+            logger.info(f"Background NSE 100-Bagger Scanning Job completed in {elapsed:.2f} seconds!")
+            
+        except Exception as e:
+            logger.critical(f"Background daily cron scanner crashed: {e}")
+        finally:
+            db.close()
+

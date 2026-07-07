@@ -1,5 +1,5 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from typing import List, Optional
 from app.schemas.bagger import (
     ScanRequest,
@@ -91,3 +91,20 @@ async def scan_tickers(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Rule engine scanning execution encountered a fatal error: {str(e)}"
         )
+
+@router.post("/trigger", status_code=status.HTTP_202_ACCEPTED)
+async def trigger_scan_job(
+    background_tasks: BackgroundTasks,
+    limit: Optional[int] = None,
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Trigger the daily background 100-bagger scanning job.
+    Runs asynchronously using FastAPI BackgroundTasks to prevent HTTP timeouts.
+    """
+    logger.info(f"User {user_id} triggered background scan job with limit={limit}.")
+    background_tasks.add_task(
+        BaggerScannerService.run_background_scan,
+        limit=limit
+    )
+    return {"message": "Background scanning job triggered successfully. View console logs for details."}
