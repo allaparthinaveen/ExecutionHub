@@ -53,6 +53,20 @@ async def run_daily_scan():
         logger.info("Fetching active symbols registry from NSE...")
         nse_symbols = BaggerScannerService.fetch_nse_symbols()
         
+        # Query existing tickers in database to exclude them
+        try:
+            existing_records = db.query(NSEBaggerScanResult.ticker).all()
+            existing_tickers = {r.ticker.upper().strip() for r in existing_records}
+        except Exception as db_err:
+            logger.warning(f"Failed to query existing tickers from DB: {db_err}")
+            existing_tickers = set()
+            
+        # Filter remaining tickers that are not already scanned
+        remaining_symbols = [
+            sym for sym in nse_symbols 
+            if f"{sym.strip().upper()}.NS" not in existing_tickers
+        ]
+        
         # Support running a fast dry run via command line argument
         limit = None
         for arg in sys.argv:
@@ -61,11 +75,13 @@ async def run_daily_scan():
                     limit = int(arg.split("=")[1])
                 except Exception:
                     pass
-        if limit:
-            logger.info(f"Limiting active scan list to top {limit} symbols for testing/validation.")
-            nse_symbols = nse_symbols[:limit]
-            
-        logger.info(f"Total symbols to process: {len(nse_symbols)}")
+        
+        # Slice list to next batch (defaulting to 500 unscanned stocks if limit is not set)
+        scan_limit = limit if limit is not None else 500
+        nse_symbols = remaining_symbols[:scan_limit]
+        
+        logger.info(f"Registry total: {len(remaining_symbols) + len(existing_tickers)}. Existing in DB: {len(existing_tickers)}. Remaining unscanned: {len(remaining_symbols)}.")
+        logger.info(f"Scanning list limited to next {len(nse_symbols)} unscanned symbols.")
         
         # 2. Setup config
         config = BaggerFilterConfig()

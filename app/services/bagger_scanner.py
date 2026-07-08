@@ -658,9 +658,27 @@ class BaggerScannerService:
         try:
             logger.info("Fetching active symbols registry from NSE...")
             nse_symbols = cls.fetch_nse_symbols()
-            if limit:
-                logger.info(f"Limiting active scan list to top {limit} symbols for testing/validation.")
-                nse_symbols = nse_symbols[:limit]
+            
+            # Query existing tickers in database to exclude them
+            try:
+                existing_records = db.query(NSEBaggerScanResult.ticker).all()
+                existing_tickers = {r.ticker.upper().strip() for r in existing_records}
+            except Exception as db_err:
+                logger.warning(f"Failed to query existing tickers from DB: {db_err}")
+                existing_tickers = set()
+                
+            # Filter remaining tickers that are not already scanned
+            remaining_symbols = [
+                sym for sym in nse_symbols 
+                if f"{sym.strip().upper()}.NS" not in existing_tickers
+            ]
+            
+            logger.info(f"Registry total: {len(nse_symbols)}. Existing in DB: {len(existing_tickers)}. Remaining unscanned: {len(remaining_symbols)}")
+            
+            # Slice list to next batch (defaulting to 500 unscanned stocks if limit is not set)
+            scan_limit = limit if limit is not None else 500
+            nse_symbols = remaining_symbols[:scan_limit]
+            logger.info(f"Scanning list limited to next {len(nse_symbols)} unscanned symbols.")
                 
             stocks_fetched = len(nse_symbols)
             stocks_scanned = 0
