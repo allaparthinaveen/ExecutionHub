@@ -112,7 +112,11 @@ async def scan_tickers(
                 insufficient_data_candidates=[]
             )
         except Exception as db_err:
-            logger.error(f"Database scan query failed: {db_err}; falling back to live scan.")
+            logger.error(f"Database scan query failed: {db_err}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Database query failed: {str(db_err)}"
+            )
             
     # 2. Live Crawl / Scan Path
     # Handle auto-scan if tickers list is empty
