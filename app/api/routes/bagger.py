@@ -57,7 +57,7 @@ async def scan_tickers(
             # Query pre-scanned records
             query = db.query(NSEBaggerScanResult)
             if request.filter_potentials:
-                query = query.filter(NSEBaggerScanResult.label.in_(["High Potential", "Moderate Potential"]))
+                query = query.filter(NSEBaggerScanResult.passed == True)
                 
             records = query.order_by(NSEBaggerScanResult.score.desc()).all()
             
@@ -149,6 +149,10 @@ async def scan_tickers(
         total_passed = sum(1 for c in candidates if c.passed)
         total_processed = len(tickers_list) - len(query_failures)
         
+        # Filter candidates if filter_potentials is True
+        if request.filter_potentials:
+            candidates = [c for c in candidates if c.passed]
+            
         summary = ScanSummary(
             total_input=len(tickers_list),
             total_processed=total_processed,
