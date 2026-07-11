@@ -57,11 +57,12 @@ async def scan_tickers(
     config = request.config
     
     # 1. Fast Database Read Path
+    # 1. Fast Database Read Path
     if not tickers_list and request.use_db:
         logger.info(f"User {user_id} requested database scan read.")
         try:
-            # Query pre-scanned records - always filter to passed == True
-            query = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.passed == True)
+            # Query pre-scanned records - filter strictly to passed == True by using score >= 90.0
+            query = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.score >= 90.0)
             records = query.order_by(NSEBaggerScanResult.score.desc()).all()
             
             candidates = []
@@ -82,10 +83,10 @@ async def scan_tickers(
                     BaggerCandidate(
                         ticker=record.ticker,
                         company_name=record.company_name,
-                        passed=record.passed,
+                        passed=True, # Explicitly mark as True since we filter by score >= 90.0
                         score=record.score,
                         pass_ratio=record.pass_ratio,
-                        label=record.label,
+                        label="High Potential",
                         checks=checks_list,
                         missing_fields=record.missing_fields or [],
                         warnings=record.warnings or [],
@@ -94,10 +95,10 @@ async def scan_tickers(
                     )
                 )
                 
-            # Summary Metrics for database population
+            # Summary Metrics for database population (strictly aligned to 90% threshold)
             total_db_records = db.query(NSEBaggerScanResult).count()
-            total_passed = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.label == "High Potential").count()
-            total_failed = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.label == "Low Potential").count()
+            total_passed = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.score >= 90.0).count()
+            total_failed = db.query(NSEBaggerScanResult).filter((NSEBaggerScanResult.score < 90.0) & (NSEBaggerScanResult.label != "Insufficient Data")).count()
             total_insufficient = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.label == "Insufficient Data").count()
             
             summary = ScanSummary(
