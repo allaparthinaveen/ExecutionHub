@@ -39,12 +39,12 @@ assert res.status_code == 200
 tickers = res.json()
 print(f"Total active NSE tickers fetched: {len(tickers)}")
 print(f"Sample tickers: {tickers[:10]}")
-assert "DELHIVERY" in tickers
+assert "MPSLTD" in tickers
 
-# 3. Test Scan Delhivery
-print("\n3. Testing POST /scan for DELHIVERY.NS...")
+# 3. Test Scan MPSLTD
+print("\n3. Testing POST /scan for MPSLTD.NS...")
 payload = {
-    "tickers": ["DELHIVERY.NS"],
+    "tickers": ["MPSLTD.NS"],
     "config": {
         "max_market_cap_inr": 1000000000000.0, # relax cap size
         "min_revenue_cagr": 10.0,
@@ -57,7 +57,7 @@ res = client.post("/api/v1/bagger/scan", json=payload, headers=headers)
 print(f"Status: {res.status_code}")
 assert res.status_code == 200
 data = res.json()
-print("Delhivery 100-Bagger scan results:")
+print("MPSLTD 100-Bagger scan results:")
 print(f"  Summary: {data['summary']}")
 cand = data["candidates"][0]
 print(f"  Ticker: {cand['ticker']}")

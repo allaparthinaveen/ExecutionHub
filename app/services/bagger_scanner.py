@@ -642,7 +642,7 @@ class BaggerScannerService:
         # Classification Mapping
         if possible_weight < 50.0:
             label = "Insufficient Data"
-        elif score >= 80.0 and pass_ratio >= config.min_pass_ratio:
+        elif score >= 90.0 and pass_ratio >= config.min_pass_ratio:
             label = "High Potential"
         elif 60.0 <= score < 80.0:
             label = "Moderate Potential"

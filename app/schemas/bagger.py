@@ -36,8 +36,8 @@ class BaggerFilterConfig(BaseModel):
         description="Maximum Debt-to-Equity ratio to enforce debt safety."
     )
     min_pass_ratio: float = Field(
-        0.80, 
-        description="Minimum fraction of evaluable checks that must pass. Default is 0.80 (80%)."
+        0.90, 
+        description="Minimum fraction of evaluable checks that must pass. Default is 0.90 (90%)."
     )
     max_concurrency: int = Field(
         5, 

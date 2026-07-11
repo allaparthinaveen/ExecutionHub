@@ -58,13 +58,10 @@ async def scan_tickers(
     
     # 1. Fast Database Read Path
     if not tickers_list and request.use_db:
-        logger.info(f"User {user_id} requested database scan read (filter_potentials={request.filter_potentials}).")
+        logger.info(f"User {user_id} requested database scan read.")
         try:
-            # Query pre-scanned records
-            query = db.query(NSEBaggerScanResult)
-            if request.filter_potentials:
-                query = query.filter(NSEBaggerScanResult.passed == True)
-                
+            # Query pre-scanned records - always filter to passed == True
+            query = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.passed == True)
             records = query.order_by(NSEBaggerScanResult.score.desc()).all()
             
             candidates = []
@@ -155,9 +152,8 @@ async def scan_tickers(
         total_passed = sum(1 for c in candidates if c.passed)
         total_processed = len(tickers_list) - len(query_failures)
         
-        # Filter candidates if filter_potentials is True
-        if request.filter_potentials:
-            candidates = [c for c in candidates if c.passed]
+        # Always filter candidates to passed ones only
+        candidates = [c for c in candidates if c.passed]
             
         summary = ScanSummary(
             total_input=len(tickers_list),
