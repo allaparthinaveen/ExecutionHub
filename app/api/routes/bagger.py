@@ -1,4 +1,7 @@
 import logging
+import pandas as pd
+import yfinance as yf
+from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from typing import List, Optional
 from sqlalchemy.orm import Session
@@ -7,7 +10,10 @@ from app.schemas.bagger import (
     ScanResponse,
     ScanSummary,
     BaggerCandidate,
-    ScreenerCheckResult
+    ScreenerCheckResult,
+    BacktestResponse,
+    BacktestSummary,
+    BacktestCandidateResult
 )
 from app.services.bagger_scanner import BaggerScannerService
 from app.api.dependencies import get_current_user, get_db
@@ -190,3 +196,122 @@ async def trigger_scan_job(
         limit=limit
     )
     return {"message": "Background scanning job triggered successfully. View console logs for details."}
+
+@router.get("/backtest", response_model=BacktestResponse)
+async def run_portfolio_backtest(
+    start_year: int = 2022,
+    total_investment: float = 50000.0,
+    db: Session = Depends(get_db),
+    user_id: str = Depends(get_current_user)
+):
+    """
+    Backtest the High Potential candidates currently stored in the database.
+    
+    Simulates investing a fixed amount (default: ₹50,000) split equally among
+    all passed candidates starting at the specified start year, and calculates
+    individual and overall annualized returns (CAGR) and final valuations.
+    """
+    logger.info(f"User {user_id} requested portfolio backtest starting from {start_year} (investment: {total_investment}).")
+    
+    # 1. Fetch High Potential candidates (passed candidates)
+    records = db.query(NSEBaggerScanResult).filter(
+        (NSEBaggerScanResult.passed == True) | (NSEBaggerScanResult.label == "High Potential")
+    ).all()
+    
+    if not records:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No High Potential candidates found in the database. Please run a scan job first to populate results."
+        )
+        
+    tickers = [r.ticker for r in records]
+    ticker_metadata = {r.ticker: {"name": r.company_name, "score": r.score} for r in records}
+    
+    # 2. Bulk download historical prices for start year and current prices
+    logger.info(f"Downloading bulk price data from yfinance for {len(tickers)} tickers...")
+    try:
+        hist_data = yf.download(tickers=tickers, start=f"{start_year}-01-01", end=f"{start_year}-12-31")['Close']
+        current_data = yf.download(tickers=tickers, period="5d")['Close']
+    except Exception as e:
+        logger.error(f"Failed to fetch bulk price data: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve price history from Yahoo Finance: {str(e)}"
+        )
+        
+    candidates_results = []
+    allocation_per_stock = total_investment / len(tickers)
+    years_elapsed = datetime.now().year - start_year
+    if years_elapsed <= 0:
+        years_elapsed = 1
+        
+    for ticker in tickers:
+        name = ticker_metadata[ticker]["name"] or ticker
+        
+        # Calculate price then
+        price_then = None
+        if isinstance(hist_data, pd.DataFrame):
+            if ticker in hist_data.columns:
+                price_then = hist_data[ticker].dropna().mean()
+        else:
+            price_then = hist_data.dropna().mean()
+            
+        # Calculate price now
+        price_now = None
+        if isinstance(current_data, pd.DataFrame):
+            if ticker in current_data.columns:
+                valid_prices = current_data[ticker].dropna()
+                if not valid_prices.empty:
+                    price_now = valid_prices.iloc[-1]
+        else:
+            valid_prices = current_data.dropna()
+            if not valid_prices.empty:
+                price_now = valid_prices.iloc[-1]
+                
+        if not price_then or not price_now or pd.isna(price_then) or pd.isna(price_now):
+            logger.warning(f"Missing price data for {ticker}. Skipping from portfolio calculations.")
+            continue
+            
+        multiple = price_now / price_then
+        cagr = (multiple ** (1.0 / years_elapsed) - 1.0) * 100.0
+        final_val = allocation_per_stock * multiple
+        profit = final_val - allocation_per_stock
+        
+        candidates_results.append(
+            BacktestCandidateResult(
+                ticker=ticker,
+                company_name=name,
+                buy_price=round(float(price_then), 2),
+                current_price=round(float(price_now), 2),
+                multiple=round(float(multiple), 2),
+                cagr=round(float(cagr), 2),
+                allocated_amount=round(float(allocation_per_stock), 2),
+                final_value=round(float(final_val), 2),
+                profit=round(float(profit), 2)
+            )
+        )
+        
+    if not candidates_results:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to resolve price data for any of the High Potential candidates."
+        )
+        
+    total_final_value = sum(c.final_value for c in candidates_results)
+    total_profit = total_final_value - total_investment
+    overall_multiple = total_final_value / total_investment
+    overall_cagr = (overall_multiple ** (1.0 / years_elapsed) - 1.0) * 100.0
+    
+    summary = BacktestSummary(
+        total_candidates=len(candidates_results),
+        total_investment=round(total_investment, 2),
+        final_value=round(total_final_value, 2),
+        total_profit=round(total_profit, 2),
+        return_multiple=round(overall_multiple, 2),
+        cagr=round(overall_cagr, 2)
+    )
+    
+    return BacktestResponse(
+        summary=summary,
+        candidates=candidates_results
+    )

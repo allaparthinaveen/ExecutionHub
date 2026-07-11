@@ -131,3 +131,26 @@ class ScanResponse(BaseModel):
     candidates: List[BaggerCandidate] = Field(..., description="Ranked short-list of bagger candidates matching criteria.")
     failed_candidates: List[str]
     insufficient_data_candidates: List[str]
+
+class BacktestCandidateResult(BaseModel):
+    ticker: str
+    company_name: str
+    buy_price: float
+    current_price: float
+    multiple: float
+    cagr: float
+    allocated_amount: float
+    final_value: float
+    profit: float
+
+class BacktestSummary(BaseModel):
+    total_candidates: int
+    total_investment: float
+    final_value: float
+    total_profit: float
+    return_multiple: float
+    cagr: float
+
+class BacktestResponse(BaseModel):
+    summary: BacktestSummary
+    candidates: List[BacktestCandidateResult]

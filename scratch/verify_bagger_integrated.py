@@ -108,6 +108,20 @@ for cand in data["candidates"]:
     print(f"  Ticker: {cand['ticker']}, Company: {cand['company_name']}, Label: {cand['label']}")
 print(f"Summary metrics: {data['summary']}")
 
+# 7. Test GET /backtest endpoint
+print("\n7. Testing GET /backtest endpoint...")
+res = client.get("/api/v1/bagger/backtest?start_year=2022&total_investment=50000.0", headers=headers)
+print(f"Status: {res.status_code}")
+assert res.status_code == 200
+data = res.json()
+print("Backtest Summary:")
+print(f"  Total candidates backtested: {data['summary']['total_candidates']}")
+print(f"  Initial Investment: ₹{data['summary']['total_investment']}")
+print(f"  Final Valuation: ₹{data['summary']['final_value']}")
+print(f"  Total profit/loss: ₹{data['summary']['total_profit']}")
+print(f"  CAGR: {data['summary']['cagr']}%")
+print(f"  Multiple: {data['summary']['return_multiple']}x")
+
 print("\nAll integrated 100-Bagger API checks passed successfully!")
 
 
