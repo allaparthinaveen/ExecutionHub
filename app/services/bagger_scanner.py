@@ -203,6 +203,17 @@ class BaggerScannerService:
                             except Exception:
                                 pass
                         data["eps_history"] = eps_history
+                    elif "net profit" in row_label:
+                        net_profit_history = []
+                        for yr, td in zip(years, cells[1:]):
+                            val_str = td.text.strip().replace(",", "")
+                            try:
+                                val = float(val_str)
+                                if yr is not None:
+                                    net_profit_history.append({"year": yr, "value": val})
+                            except Exception:
+                                pass
+                        data["net_profit_history"] = net_profit_history
                         
             # 3. Parse Balance Sheet Table (Debt, Reserves, Capital)
             bs_section = soup.find("section", id="balance-sheet")
@@ -263,6 +274,52 @@ class BaggerScannerService:
                             data["promoter_holding"] = float(latest_holding_str)
                         except Exception:
                             pass
+                            
+            # 5. Parse Cash Flow Table (Cash from Operating Activity)
+            cf_section = soup.find("section", id="cash-flow")
+            if cf_section:
+                cf_years = []
+                cf_header = cf_section.find("tr")
+                if cf_header:
+                    for th in cf_header.find_all("th")[1:]:
+                        text = th.text.strip()
+                        try:
+                            cf_years.append(int(text.split()[-1]))
+                        except Exception:
+                            cf_years.append(None)
+                            
+                for row in cf_section.find_all("tr"):
+                    cells = row.find_all("td")
+                    if not cells:
+                        continue
+                    row_label = cells[0].text.strip().lower()
+                    if "cash from operating activity" in row_label or "operating activity" in row_label:
+                        ocf_history = []
+                        for yr, td in zip(cf_years, cells[1:]):
+                            val_str = td.text.strip().replace(",", "")
+                            try:
+                                is_neg = False
+                                if val_str.startswith("(") and val_str.endswith(")"):
+                                    val_str = val_str[1:-1]
+                                    is_neg = True
+                                val = float(val_str)
+                                if yr is not None:
+                                    ocf_history.append({"year": yr, "value": -val if is_neg else val})
+                            except Exception:
+                                pass
+                        data["ocf_history"] = ocf_history
+                        
+            # 6. Compute Cash Flow Quality ratio from Screener P&L and Cash Flow
+            if "ocf_history" in data and "net_profit_history" in data:
+                ratios = []
+                ocf_dict = {item["year"]: item["value"] for item in data["ocf_history"]}
+                for item in data["net_profit_history"]:
+                    yr = item["year"]
+                    np_val = item["value"]
+                    if yr in ocf_dict and np_val and np_val > 0:
+                        ratios.append(ocf_dict[yr] / np_val)
+                if ratios:
+                    data["ocf_to_net_income_ratio"] = sum(ratios) / len(ratios)
         except Exception as e:
             logger.error(f"Error scraping Screener.in for {clean_symbol}: {e}")
             
@@ -309,12 +366,36 @@ class BaggerScannerService:
                     debt_to_equity = total_debt_list[0] / equity_list[0]
             except Exception:
                 pass
-                
-        # Promoter Holding
+
+        # Promoter Holding & Pledging
         promoter_holding = YahooFinanceClient.extract_float_metric(info, ["heldPercentInsiders", "insiderOwnersPercent"])
         if promoter_holding is not None:
             promoter_holding = promoter_holding * 100.0
             
+        pledged_percentage = YahooFinanceClient.extract_float_metric(info, ["pledgedPercentInsiders"])
+        if pledged_percentage is not None:
+            pledged_percentage = pledged_percentage * 100.0
+        else:
+            pledged_percentage = 0.0
+            
+        # Cash Flow Quality
+        cf_df = statements["cashflow"]
+        ocf_to_net_income_ratio = None
+        
+        ocf_rows = ["Operating Cash Flow", "Cash Flow From Operating Activities", "Total Cash From Operating Activities", "Net Cash Provided By Operating Activities"]
+        ocf_vals = YahooFinanceClient.extract_statement_metric(cf_df, ocf_rows)
+        
+        net_income_rows = ["Net Income", "Net Income From Continuing Operations", "Net Income Common Stockholders"]
+        net_income_vals = YahooFinanceClient.extract_statement_metric(fin_df, net_income_rows)
+        
+        if ocf_vals and net_income_vals:
+            ratios = []
+            for ocf, ni in zip(ocf_vals, net_income_vals):
+                if ni and ni > 0 and ocf is not None:
+                    ratios.append(ocf / ni)
+            if ratios:
+                ocf_to_net_income_ratio = sum(ratios) / len(ratios)
+                
         # 2. Revenue & EPS History
         revenue_history = []
         eps_history = []
@@ -347,7 +428,7 @@ class BaggerScannerService:
                     
         # Check if we should scrape Screener.in as a secondary source fallback for Indian stocks
         is_indian_stock = yf_symbol.endswith(".NS") or yf_symbol.endswith(".BO")
-        if is_indian_stock and (not revenue_history or market_cap is None or roe is None or promoter_holding is None or debt_to_equity is None):
+        if is_indian_stock and (not revenue_history or market_cap is None or roe is None or promoter_holding is None or debt_to_equity is None or ocf_to_net_income_ratio is None):
             logger.info(f"Yfinance data incomplete for Indian stock {yf_symbol}; querying Screener.in fallback...")
             screener_data = cls.scrape_screener_in(yf_symbol)
             if screener_data:
@@ -365,6 +446,8 @@ class BaggerScannerService:
                     promoter_holding = screener_data["promoter_holding"]
                 if debt_to_equity is None and "debt_to_equity" in screener_data:
                     debt_to_equity = screener_data["debt_to_equity"]
+                if ocf_to_net_income_ratio is None and "ocf_to_net_income_ratio" in screener_data:
+                    ocf_to_net_income_ratio = screener_data["ocf_to_net_income_ratio"]
                 if not revenue_history and "revenue_history" in screener_data:
                     for item in screener_data["revenue_history"]:
                         revenue_history.append(YearlyMetric(year=item["year"], value=item["value"]))
@@ -384,6 +467,8 @@ class BaggerScannerService:
             operating_margin=op_margin,
             debt_to_equity=debt_to_equity,
             promoter_holding=promoter_holding,
+            ocf_to_net_income_ratio=ocf_to_net_income_ratio,
+            pledged_percentage=pledged_percentage,
             revenue_history=revenue_history,
             eps_history=eps_history
         )
@@ -520,6 +605,36 @@ class BaggerScannerService:
             missing_fields.append("debtToEquity")
             warnings.append("Debt-to-Equity metadata unavailable; safety check skipped.")
             
+        # 9. Cash Flow Quality Check (Weight 10)
+        cf_ratio = metrics.ocf_to_net_income_ratio
+        if cf_ratio is not None:
+            possible_weight += 10.0
+            evaluable_checks += 1
+            passed = cf_ratio >= config.min_ocf_to_net_income_ratio
+            desc = f"OCF/Net Income Ratio: {cf_ratio:.2f} " + (">=" if passed else "<") + f" {config.min_ocf_to_net_income_ratio:.2f}"
+            if passed:
+                achieved_weight += 10.0
+                passed_checks += 1
+            checks.append(ScreenerCheckResult(check_name="Cash Flow Quality", passed=passed, description=desc, weight=10.0, achieved_weight=10.0 if passed else 0.0))
+        else:
+            missing_fields.append("ocfToNetIncomeRatio")
+            warnings.append("Operating Cash Flow or Net Income history insufficient; cash flow quality check skipped.")
+            
+        # 10. Promoter Pledged Shares Check (Weight 5)
+        pledged = metrics.pledged_percentage
+        if pledged is not None:
+            possible_weight += 5.0
+            evaluable_checks += 1
+            passed = pledged <= config.max_pledged_percentage
+            desc = f"Pledged Shares: {pledged:.2f}% " + ("<=" if passed else ">") + f" {config.max_pledged_percentage:.2f}%"
+            if passed:
+                achieved_weight += 5.0
+                passed_checks += 1
+            checks.append(ScreenerCheckResult(check_name="Promoter Pledging", passed=passed, description=desc, weight=5.0, achieved_weight=5.0 if passed else 0.0))
+        else:
+            missing_fields.append("pledgedPercentage")
+            warnings.append("Promoter pledging data unavailable; pledging check skipped.")
+
         # Final calculations
         score = (achieved_weight / possible_weight) * 100.0 if possible_weight > 0 else 0.0
         pass_ratio = passed_checks / evaluable_checks if evaluable_checks > 0 else 0.0
@@ -545,6 +660,8 @@ class BaggerScannerService:
             "operating_margin": metrics.operating_margin,
             "debt_to_equity": metrics.debt_to_equity,
             "promoter_holding": metrics.promoter_holding,
+            "ocf_to_net_income_ratio": cf_ratio,
+            "pledged_percentage": pledged,
             "revenue_cagr": rev_cagr,
             "eps_cagr": eps_cagr
         }

@@ -43,6 +43,14 @@ class BaggerFilterConfig(BaseModel):
         5, 
         description="Maximum number of parallel ticker queries allowed."
     )
+    min_ocf_to_net_income_ratio: float = Field(
+        0.80,
+        description="Minimum ratio of Cash Flow from Operations to Net Income. Ensures profits are backed by real cash."
+    )
+    max_pledged_percentage: float = Field(
+        10.0,
+        description="Maximum percentage of promoter holdings that can be pledged. Enforces skin in the game."
+    )
 
 class YearlyMetric(BaseModel):
     """Historical yearly value for growth metrics."""
@@ -62,6 +70,8 @@ class StockMetrics(BaseModel):
     operating_margin: Optional[float] = None
     debt_to_equity: Optional[float] = None
     promoter_holding: Optional[float] = None
+    ocf_to_net_income_ratio: Optional[float] = None
+    pledged_percentage: Optional[float] = None
     revenue_history: List[YearlyMetric] = []
     eps_history: List[YearlyMetric] = []
 
