@@ -62,7 +62,17 @@ async def scan_tickers(
         try:
             # Query pre-scanned records - filter strictly to passed == True by using score >= 90.0
             query = db.query(USBaggerScanResult).filter(USBaggerScanResult.score >= 90.0)
-            records = query.order_by(USBaggerScanResult.score.desc()).all()
+            raw_records = query.all()
+            
+            # Sort records: Score descending (highest first), then Market Cap ascending (smallest first) for ties.
+            # Treat None, 0, or negative market caps as infinity so they go to the bottom of the list.
+            def get_sort_key(r):
+                mcap = (r.metrics or {}).get("market_cap")
+                if mcap is None or mcap <= 0:
+                    mcap = float('inf')
+                return (-r.score, mcap)
+            
+            records = sorted(raw_records, key=get_sort_key)
             
             candidates = []
             for record in records:
