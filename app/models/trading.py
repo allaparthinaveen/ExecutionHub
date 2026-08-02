@@ -45,3 +45,20 @@ class NSEBaggerScanResult(Base):
     missing_fields = Column(JSON)   # Stores list of missing fields
     explanation = Column(String)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+class USBaggerScanResult(Base):
+    __tablename__ = "us_bagger_scan_results"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ticker = Column(String, unique=True, index=True, nullable=False)
+    company_name = Column(String)
+    passed = Column(Boolean, default=False)
+    score = Column(Float, default=0.0)
+    pass_ratio = Column(Float, default=0.0)
+    label = Column(String)
+    metrics = Column(JSON)          # Stores dict of metrics
+    checks = Column(JSON)           # Stores list of ScreenerCheckResult
+    warnings = Column(JSON)         # Stores list of warnings
+    missing_fields = Column(JSON)   # Stores list of missing fields
+    explanation = Column(String)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

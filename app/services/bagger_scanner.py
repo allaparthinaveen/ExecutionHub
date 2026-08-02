@@ -35,6 +35,8 @@ def sanitize_for_json(val: Any) -> Any:
 
 # Cache for NSE symbol list (24 hours TTL)
 nse_symbols_cache = TTLCache(maxsize=1, ttl=86400)
+# Cache for US symbol list (24 hours TTL)
+us_symbols_cache = TTLCache(maxsize=1, ttl=86400)
 
 class BaggerScannerService:
     @staticmethod
@@ -69,14 +71,53 @@ class BaggerScannerService:
         except Exception as e:
             logger.error(f"Failed to download/parse NSE equity register: {e}")
             
-        # Return a basic default backup list of major NSE symbols if download fails
-        backup_list = [
-            "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK", "BHARTIARTL",
-            "SBI", "LICI", "ITC", "HINDUNILVR", "LT", "BAJFINANCE", "HCLTECH",
-            "MARUTI", "SUNPHARMA", "ADANIENT", "KOTAKBANK", "TITAN", "AXISBANK",
-            "DELHIVERY", "ZOMATO"
-        ]
-        return backup_list
+        # Fallback list if the live download fails (ensures app is resilient)
+        fallback = ["3MINDIA", "ABB", "ACC", "ADANIENT", "ADANIPORTS", "AMBUJACEM", "APOLLOHOSP", "ASIANPAINT", "ASTRAL"]
+        return fallback
+
+    @staticmethod
+    def fetch_us_symbols() -> List[str]:
+        """
+        Download and parse the US stock symbol registry.
+        """
+        if "symbols" in us_symbols_cache:
+            return us_symbols_cache["symbols"]
+            
+        nasdaq_url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nasdaq/nasdaq_tickers.txt"
+        nyse_url = "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/nyse/nyse_tickers.txt"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        logger.info("Downloading active equities registers from public US Nasdaq & NYSE symbol registries...")
+        symbols_set = set()
+        try:
+            # Download Nasdaq tickers
+            res_nasdaq = requests.get(nasdaq_url, headers=headers, timeout=15)
+            if res_nasdaq.status_code == 200:
+                for line in res_nasdaq.text.splitlines():
+                    sym = line.strip().upper()
+                    if sym.isalpha() and len(sym) <= 5:
+                        symbols_set.add(sym)
+            
+            # Download NYSE tickers
+            res_nyse = requests.get(nyse_url, headers=headers, timeout=15)
+            if res_nyse.status_code == 200:
+                for line in res_nyse.text.splitlines():
+                    sym = line.strip().upper()
+                    if sym.isalpha() and len(sym) <= 5:
+                        symbols_set.add(sym)
+                        
+            symbols = sorted(list(symbols_set))
+            if symbols:
+                us_symbols_cache["symbols"] = symbols
+                return symbols
+        except Exception as e:
+            logger.error(f"Failed to download/parse US stock symbol registry: {e}")
+            
+        # Fallback to liquid S&P stocks
+        fallback = ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "LLY", "UNH", "V", "JPM", "AVGO", "XOM"]
+        return fallback
 
     @staticmethod
     def _calculate_cagr(history: List[YearlyMetric]) -> Optional[float]:
@@ -330,7 +371,14 @@ class BaggerScannerService:
         """Fetch and normalize financial metrics for a symbol using YahooFinanceClient."""
         yf_symbol = symbol.strip().upper()
         if not yf_symbol.endswith(".NS") and not yf_symbol.endswith(".BO") and "^" not in yf_symbol:
-            yf_symbol = f"{yf_symbol}.NS"
+            try:
+                nse_list = cls.fetch_nse_symbols()
+                base_sym = yf_symbol.replace(".NS", "").replace(".BO", "")
+                if base_sym in nse_list:
+                    yf_symbol = f"{base_sym}.NS"
+            except Exception:
+                # Fallback to appending .NS if registry fetch fails
+                yf_symbol = f"{yf_symbol}.NS"
             
         # Query unified client (includes fast_info caching/retries)
         info = YahooFinanceClient.get_ticker_info(yf_symbol)
@@ -490,8 +538,13 @@ class BaggerScannerService:
         if mcap is not None:
             possible_weight += 20.0
             evaluable_checks += 1
-            passed = mcap <= config.max_market_cap_inr
-            desc = f"Market Cap: {mcap/1e7:.2f} Cr INR " + ("<=" if passed else ">") + f" {config.max_market_cap_inr/1e7:.1f} Cr INR"
+            is_us_stock = not (metrics.ticker.endswith(".NS") or metrics.ticker.endswith(".BO"))
+            if is_us_stock:
+                passed = mcap <= config.max_market_cap_usd
+                desc = f"Market Cap: ${mcap/1e6:.2f}M USD " + ("<=" if passed else ">") + f" ${config.max_market_cap_usd/1e6:.1f}M USD"
+            else:
+                passed = mcap <= config.max_market_cap_inr
+                desc = f"Market Cap: {mcap/1e7:.2f} Cr INR " + ("<=" if passed else ">") + f" {config.max_market_cap_inr/1e7:.1f} Cr INR"
             if passed:
                 achieved_weight += 20.0
                 passed_checks += 1
@@ -760,44 +813,53 @@ class BaggerScannerService:
         return candidates, query_failures, failed_screening, insufficient
 
     @classmethod
-    async def run_background_scan(cls, limit: Optional[int] = None):
+    async def run_background_scan(cls, limit: Optional[int] = None, market: str = "NSE"):
         """
         Runs the complete daily scan in a background thread/task and upserts results to DB.
         """
         from app.models.base import SessionLocal
-        from app.models.trading import NSEBaggerScanResult
+        from app.models.trading import NSEBaggerScanResult, USBaggerScanResult
         import time
         
-        logger.info("Starting Daily Background NSE 100-Bagger Scanning Job...")
+        market_upper = market.upper().strip()
+        is_us = (market_upper == "US")
+        db_model = USBaggerScanResult if is_us else NSEBaggerScanResult
+        
+        logger.info(f"Starting Daily Background {market_upper} 100-Bagger Scanning Job...")
         start_time = time.time()
         
         db = SessionLocal()
         try:
-            logger.info("Fetching active symbols registry from NSE...")
-            nse_symbols = cls.fetch_nse_symbols()
+            if is_us:
+                logger.info("Fetching active symbols registry from US Market...")
+                symbols = cls.fetch_us_symbols()
+            else:
+                logger.info("Fetching active symbols registry from NSE...")
+                symbols = cls.fetch_nse_symbols()
             
             # Query existing tickers in database to exclude them
             try:
-                existing_records = db.query(NSEBaggerScanResult.ticker).all()
+                existing_records = db.query(db_model.ticker).all()
                 existing_tickers = {r.ticker.upper().strip() for r in existing_records}
             except Exception as db_err:
                 logger.warning(f"Failed to query existing tickers from DB: {db_err}")
                 existing_tickers = set()
                 
             # Filter remaining tickers that are not already scanned
-            remaining_symbols = [
-                sym for sym in nse_symbols 
-                if f"{sym.strip().upper()}.NS" not in existing_tickers
-            ]
+            remaining_symbols = []
+            for sym in symbols:
+                ticker_to_check = sym.strip().upper() if is_us else f"{sym.strip().upper()}.NS"
+                if ticker_to_check not in existing_tickers:
+                    remaining_symbols.append(sym)
             
-            logger.info(f"Registry total: {len(nse_symbols)}. Existing in DB: {len(existing_tickers)}. Remaining unscanned: {len(remaining_symbols)}")
+            logger.info(f"Registry total: {len(symbols)}. Existing in DB: {len(existing_tickers)}. Remaining unscanned: {len(remaining_symbols)}")
             
             # Slice list to next batch (defaulting to 500 unscanned stocks if limit is not set)
             scan_limit = limit if limit is not None else 500
-            nse_symbols = remaining_symbols[:scan_limit]
-            logger.info(f"Scanning list limited to next {len(nse_symbols)} unscanned symbols.")
+            symbols = remaining_symbols[:scan_limit]
+            logger.info(f"Scanning list limited to next {len(symbols)} unscanned symbols.")
                 
-            stocks_fetched = len(nse_symbols)
+            stocks_fetched = len(symbols)
             stocks_scanned = 0
             stocks_updated = 0
             stocks_created = 0
@@ -809,12 +871,16 @@ class BaggerScannerService:
             stocks_insufficient_data = 0
             
             config = BaggerFilterConfig()
+            if is_us:
+                # Default lower promoter holdings threshold for US stock institutional setups
+                config.min_promoter_holding = 5.0
+                
             batch_size = 10
-            total_symbols = len(nse_symbols)
+            total_symbols = len(symbols)
             
             for i in range(0, total_symbols, batch_size):
-                batch = nse_symbols[i:i+batch_size]
-                batch_tickers = [f"{sym}.NS" for sym in batch]
+                batch = symbols[i:i+batch_size]
+                batch_tickers = batch if is_us else [f"{sym}.NS" for sym in batch]
                 
                 try:
                     candidates, query_failures, failed_list, insufficient_list = await cls.scan_universe(
@@ -839,7 +905,7 @@ class BaggerScannerService:
                             
                         checks_json = sanitize_for_json([check.model_dump() for check in cand.checks])
                         metrics_json = sanitize_for_json(cand.metrics)
-                        db_record = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.ticker == cand.ticker).first()
+                        db_record = db.query(db_model).filter(db_model.ticker == cand.ticker).first()
                         
                         if db_record:
                             db_record.company_name = cand.company_name
@@ -854,7 +920,7 @@ class BaggerScannerService:
                             db_record.explanation = cand.explanation
                             stocks_updated += 1
                         else:
-                            new_record = NSEBaggerScanResult(
+                            new_record = db_model(
                                 ticker=cand.ticker,
                                 company_name=cand.company_name,
                                 passed=cand.passed,

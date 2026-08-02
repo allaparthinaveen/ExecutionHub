@@ -7,6 +7,10 @@ class BaggerFilterConfig(BaseModel):
         50000000000.0, 
         description="Max market cap in INR. Default is 5,000 Crore INR (~$600M USD) to target small starting size."
     )
+    max_market_cap_usd: float = Field(
+        1500000000.0, 
+        description="Max market cap in USD. Default is $1.5 Billion USD to target small starting size for US markets."
+    )
     min_revenue_cagr: float = Field(
         15.0, 
         description="Minimum compound annual growth rate in sales/revenue (%)."
