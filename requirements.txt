@@ -9,7 +9,7 @@ python-dotenv==1.0.1
 pytz==2024.1
 smartapi-python
 pyotp
-yfinance
+yfinance>=0.2.43
 logzero
 websocket-client
 pyjwt==2.8.0
