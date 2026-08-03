@@ -66,10 +66,10 @@ async def scan_tickers(
             raw_records = query.all()
             
             # Sort records: Score descending (highest first), then Market Cap ascending (smallest first) for ties.
-            # Treat None, 0, or negative market caps as infinity so they go to the bottom of the list.
+            # Treat None or market caps below ₹50 Cr (500,000,000 INR) as infinity to filter out data errors/shells.
             def get_sort_key(r):
                 mcap = (r.metrics or {}).get("market_cap")
-                if mcap is None or mcap <= 0:
+                if mcap is None or mcap < 500000000.0:
                     mcap = float('inf')
                 return (-r.score, mcap)
             
