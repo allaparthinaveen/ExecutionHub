@@ -153,6 +153,100 @@ class YahooFinanceClient:
         return None
 
     @classmethod
+    def calculate_roic_history(cls, fin_df: pd.DataFrame, bs_df: pd.DataFrame) -> List[Dict[str, Any]]:
+        """
+        Calculate historical ROIC = NOPAT / Invested Capital for each year.
+        Returns a list of dictionaries like [{"year": 2023, "roic": 18.5}].
+        """
+        if fin_df.empty or bs_df.empty:
+            return []
+            
+        roic_history = []
+        
+        # Standardize index lookup keys
+        def get_row_by_keys(df, keys):
+            for k in keys:
+                matching_rows = [idx for idx in df.index if str(idx).strip().lower() == k.lower()]
+                if matching_rows:
+                    return df.loc[matching_rows[0]]
+            return None
+            
+        # Get historical rows
+        ebit_row = get_row_by_keys(fin_df, ["Operating Income", "EBIT", "Operating Revenue", "Gross Profit"])
+        pretax_row = get_row_by_keys(fin_df, ["Pretax Income", "Income Before Tax", "Operating Income"])
+        tax_row = get_row_by_keys(fin_df, ["Tax Provision", "Income Tax Expense"])
+        
+        debt_row = get_row_by_keys(bs_df, ["Total Debt", "Net Debt"])
+        lt_debt_row = get_row_by_keys(bs_df, ["Long Term Debt", "Long Term Debt And Capital Lease Obligation"])
+        curr_debt_row = get_row_by_keys(bs_df, ["Current Debt", "Current Debt And Capital Lease Obligation", "Commercial Paper"])
+        equity_row = get_row_by_keys(bs_df, ["Stockholders Equity", "Common Stock Equity", "Total Equity Gross Minority Interest"])
+        cash_row = get_row_by_keys(bs_df, ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments", "Cash Financial", "Cash Equivalents"])
+        
+        # We align by dates (columns of financials)
+        for col in fin_df.columns:
+            try:
+                # Resolve year
+                year = pd.to_datetime(col).year
+                if pd.isna(year):
+                    continue
+                year = int(year)
+                
+                # Find matching column in balance sheet (it might have slightly different dates, align by year)
+                bs_col = None
+                for bs_c in bs_df.columns:
+                    if pd.to_datetime(bs_c).year == year:
+                        bs_col = bs_c
+                        break
+                if not bs_col:
+                    # Fallback to the nearest column or same index
+                    bs_col = col if col in bs_df.columns else (bs_df.columns[0] if not bs_df.empty else None)
+                
+                # Fetch income statement items for this year
+                ebit = float(ebit_row[col]) if ebit_row is not None and col in ebit_row and not pd.isna(ebit_row[col]) else 0.0
+                pretax = float(pretax_row[col]) if pretax_row is not None and col in pretax_row and not pd.isna(pretax_row[col]) else 0.0
+                tax = float(tax_row[col]) if tax_row is not None and col in tax_row and not pd.isna(tax_row[col]) else 0.0
+                
+                # Calculate tax rate
+                tax_rate = 0.25  # default
+                if pretax > 0.0 and tax >= 0.0:
+                    tax_rate = tax / pretax
+                    if tax_rate < 0.0 or tax_rate > 0.8:
+                        tax_rate = 0.25
+                        
+                nopat = ebit * (1.0 - tax_rate)
+                
+                # Fetch balance sheet items
+                equity = 0.0
+                if equity_row is not None and bs_col in equity_row and not pd.isna(equity_row[bs_col]):
+                    equity = float(equity_row[bs_col])
+                    
+                debt = 0.0
+                if debt_row is not None and bs_col in debt_row and not pd.isna(debt_row[bs_col]):
+                    debt = float(debt_row[bs_col])
+                else:
+                    lt = float(lt_debt_row[bs_col]) if lt_debt_row is not None and bs_col in lt_debt_row and not pd.isna(lt_debt_row[bs_col]) else 0.0
+                    curr = float(curr_debt_row[bs_col]) if curr_debt_row is not None and bs_col in curr_debt_row and not pd.isna(curr_debt_row[bs_col]) else 0.0
+                    debt = lt + curr
+                    
+                cash = 0.0
+                if cash_row is not None and bs_col in cash_row and not pd.isna(cash_row[bs_col]):
+                    cash = float(cash_row[bs_col])
+                    
+                # Invested Capital = Debt + Equity - Cash
+                invested_capital = debt + equity - cash
+                if invested_capital <= 0.0:
+                    invested_capital = equity if equity > 0.0 else (debt if debt > 0.0 else 1.0)
+                    
+                roic = (nopat / invested_capital) * 100.0
+                roic_history.append({"year": year, "roic": round(roic, 2)})
+            except Exception:
+                pass
+                
+        # Sort by year ascending
+        roic_history.sort(key=lambda x: x["year"])
+        return roic_history
+
+    @classmethod
     def get_normalized_fundamentals(cls, ticker_symbol: str) -> Dict[str, Any]:
         """
         Fetch all raw data, resolve all alternative naming variations, and return
@@ -376,6 +470,9 @@ class YahooFinanceClient:
             except Exception:
                 pass
         
+        # 7. Historical ROIC
+        normalized["roic_history"] = cls.calculate_roic_history(fin_df, bs_df)
+
         # Include raw data context for debug/transparency
         normalized["_raw_info"] = info
         

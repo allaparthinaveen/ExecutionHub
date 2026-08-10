@@ -78,6 +78,7 @@ class StockMetrics(BaseModel):
     pledged_percentage: Optional[float] = None
     revenue_history: List[YearlyMetric] = []
     eps_history: List[YearlyMetric] = []
+    roic_history: List[YearlyMetric] = []
 
 class ScreenerCheckResult(BaseModel):
     """Evaluation output for a single filter check."""
@@ -100,6 +101,16 @@ class BaggerCandidate(BaseModel):
     warnings: List[str]
     metrics: Dict[str, Any]
     explanation: str
+    
+    # Extra quantitative and qualitative enhancements (optional, based on request headers)
+    deprioritized: Optional[bool] = Field(None, description="Whether the candidate was flagged and deprioritized by extra quantitative filters.")
+    quantitative_flags: Optional[List[str]] = Field(None, description="List of triggered warnings for extra quantitative filters.")
+    qualitative_score: Optional[float] = Field(None, description="Detailed qualitative score out of 90 points.")
+    qualitative_breakdown: Optional[Dict[str, float]] = Field(None, description="Breakdown of qualitative score categories.")
+    composite_score: Optional[float] = Field(None, description="Composite score = quantitative base score + qualitative score (out of 190).")
+    thesis_summary: Optional[str] = Field(None, description="Concise investment thesis focused on multi-decade compounding potential.")
+    kill_risks: Optional[List[str]] = Field(None, description="List of primary kill risks surfaced for this company.")
+    confidence_level: Optional[str] = Field(None, description="Overall conviction level: High, Medium, or Low.")
 
 class ScanRequest(BaseModel):
     """Payload for POST /scan requests."""

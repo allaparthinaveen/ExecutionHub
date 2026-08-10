@@ -503,6 +503,13 @@ class BaggerScannerService:
                     for item in screener_data["eps_history"]:
                         eps_history.append(YearlyMetric(year=item["year"], value=item["value"]))
                         
+        # 3. Calculate ROIC History
+        roic_history = []
+        raw_roic = YahooFinanceClient.calculate_roic_history(fin_df, bs_df)
+        if raw_roic:
+            for item in raw_roic:
+                roic_history.append(YearlyMetric(year=item["year"], value=item["roic"]))
+                        
         return StockMetrics(
             ticker=yf_symbol,
             company_name=company_name,
@@ -518,7 +525,8 @@ class BaggerScannerService:
             ocf_to_net_income_ratio=ocf_to_net_income_ratio,
             pledged_percentage=pledged_percentage,
             revenue_history=revenue_history,
-            eps_history=eps_history
+            eps_history=eps_history,
+            roic_history=roic_history
         )
 
     @classmethod
@@ -979,4 +987,247 @@ Average Scan Speed - {avg_speed_ms} ms/stock
             logger.critical(f"Background daily cron scanner crashed: {e}")
         finally:
             db.close()
+
+    @classmethod
+    def enrich_candidate_qualitative_quantitative(
+        cls, 
+        candidate: BaggerCandidate, 
+        metrics: StockMetrics, 
+        run_quant: bool, 
+        run_qual: bool
+    ) -> BaggerCandidate:
+        """
+        Enrich a BaggerCandidate with additional quantitative flags and/or qualitative scoring
+        based on active request headers/parameters.
+        """
+        deprioritized = False
+        quant_flags = []
+        
+        # Calculate ROIC 5-year average
+        roic_vals = [m.value for m in metrics.roic_history if m.value is not None]
+        roic_5y_avg = sum(roic_vals) / len(roic_vals) if roic_vals else None
+        
+        # Save roic_5y_avg in metrics dict for sorting later
+        candidate.metrics["roic_5y_avg"] = roic_5y_avg
+        
+        # Stage 1: Additional Quantitative Filters
+        if run_quant:
+            # 1. Insider ownership < 10%
+            insider = metrics.promoter_holding
+            if insider is None or insider < 10.0:
+                deprioritized = True
+                val_str = f"{insider:.2f}%" if insider is not None else "N/A"
+                quant_flags.append(f"Insider ownership < 10% (Actual: {val_str})")
+                
+            # 2. ROIC 5y average < 15%
+            if roic_5y_avg is None or roic_5y_avg < 15.0:
+                deprioritized = True
+                val_str = f"{roic_5y_avg:.2f}%" if roic_5y_avg is not None else "N/A"
+                quant_flags.append(f"ROIC 5y average < 15% (Actual: {val_str})")
+                
+            # 3. Debt-to-equity > 1.0
+            debt_eq = metrics.debt_to_equity
+            if debt_eq is None or debt_eq > 1.0:
+                deprioritized = True
+                val_str = f"{debt_eq:.2f}" if debt_eq is not None else "N/A"
+                quant_flags.append(f"Debt-to-equity > 1.0 (Actual: {val_str})")
+                
+            # 4. Missing critical fields
+            missing_fields = []
+            if metrics.market_cap is None:
+                missing_fields.append("marketCap")
+            if not metrics.revenue_history:
+                missing_fields.append("revenueHistory")
+            if not metrics.eps_history:
+                missing_fields.append("epsHistory")
+            if metrics.roe is None:
+                missing_fields.append("roe")
+            if metrics.operating_margin is None:
+                missing_fields.append("operatingMargins")
+            if metrics.debt_to_equity is None:
+                missing_fields.append("debtToEquity")
+            if metrics.promoter_holding is None:
+                missing_fields.append("heldPercentInsiders")
+                
+            if missing_fields:
+                deprioritized = True
+                quant_flags.append(f"Missing critical fields: {', '.join(missing_fields)}")
+                
+            candidate.deprioritized = deprioritized
+            candidate.quantitative_flags = quant_flags
+        else:
+            candidate.deprioritized = False
+            candidate.quantitative_flags = []
+            
+        # Stage 2: Structured Qualitative Scoring (Total 90 points)
+        if run_qual:
+            qual_breakdown = {}
+            
+            # 1. Consistency of high returns (ROE/ROIC) (0-12 points)
+            high_return_points = 6
+            if metrics.roe is not None and metrics.roe >= 15.0:
+                high_return_points += 3
+            if roic_5y_avg is not None and roic_5y_avg >= 15.0:
+                high_return_points += 3
+            if metrics.roic_history:
+                under_15_count = sum(1 for m in metrics.roic_history if m.value < 15.0)
+                if under_15_count == 0:
+                    high_return_points = min(12, high_return_points + 3)
+            qual_breakdown["high_returns_consistency"] = float(high_return_points)
+            
+            # 2. Growth quality & longevity (0-10 points)
+            growth_points = 4
+            rev_cagr = cls._calculate_cagr(metrics.revenue_history)
+            eps_cagr = cls._calculate_cagr(metrics.eps_history)
+            if rev_cagr is not None and rev_cagr >= 20.0:
+                growth_points += 3
+            elif rev_cagr is not None and rev_cagr >= 15.0:
+                growth_points += 2
+            if eps_cagr is not None and eps_cagr >= 20.0:
+                growth_points += 3
+            elif eps_cagr is not None and eps_cagr >= 15.0:
+                growth_points += 2
+            qual_breakdown["growth_quality_longevity"] = float(growth_points)
+            
+            # 3. Capital efficiency & FCF conversion (0-8 points)
+            fcf_points = 3
+            if metrics.ocf_to_net_income_ratio is not None and metrics.ocf_to_net_income_ratio >= 1.0:
+                fcf_points += 3
+            elif metrics.ocf_to_net_income_ratio is not None and metrics.ocf_to_net_income_ratio >= 0.8:
+                fcf_points += 2
+            
+            raw_info = metrics.dict().get("_raw_info") or {}
+            fcf_val = raw_info.get("freeCashflow") or metrics.dict().get("free_cash_flow")
+            if fcf_val and metrics.market_cap and metrics.market_cap > 0:
+                fcf_margin = (fcf_val / metrics.market_cap) * 100.0
+                if fcf_margin >= 5.0:
+                    fcf_points += 2
+            qual_breakdown["capital_efficiency_fcf_conversion"] = float(min(8, fcf_points))
+            
+            # 4. Balance sheet strength beyond D/E (0-5 points)
+            bs_points = 2
+            debt = metrics.debt_to_equity
+            if debt is not None and debt < 0.2:
+                bs_points += 2
+            elif debt is not None and debt < 0.5:
+                bs_points += 1
+            if metrics.ocf_to_net_income_ratio is not None and metrics.ocf_to_net_income_ratio >= 1.2:
+                bs_points += 1
+            qual_breakdown["balance_sheet_strength"] = float(min(5, bs_points))
+            
+            # 5. Valuation buffer (PE relative to growth) (0-5 points)
+            val_points = 1
+            pe = metrics.trailing_pe
+            cagr = rev_cagr or 15.0
+            if pe and cagr:
+                peg = pe / cagr
+                if peg <= 1.0:
+                    val_points = 5
+                elif peg <= 1.5:
+                    val_points = 4
+                elif peg <= 2.0:
+                    val_points = 3
+                else:
+                    val_points = 2
+            qual_breakdown["valuation_buffer"] = float(val_points)
+            
+            # 6. Moat durability (0-12 points)
+            moat_points = 4
+            margin = metrics.operating_margin
+            if margin is not None:
+                if margin >= 25.0:
+                    moat_points += 6
+                elif margin >= 15.0:
+                    moat_points += 4
+                elif margin >= 10.0:
+                    moat_points += 2
+            
+            comp_name_lower = (candidate.company_name or "").lower()
+            is_tech_saas = any(k in comp_name_lower or k in candidate.explanation.lower() for k in ["software", "tech", "saas", "digital", "data", "consulting"])
+            if is_tech_saas:
+                moat_points += 2
+            qual_breakdown["moat_durability"] = float(min(12, moat_points))
+            
+            # 7. TAM & runway (0-12 points)
+            tam_points = 5
+            mcap_val = metrics.market_cap
+            is_us = not (candidate.ticker.endswith(".NS") or candidate.ticker.endswith(".BO"))
+            if mcap_val:
+                if is_us and mcap_val < 300000000.0:
+                    tam_points += 5
+                elif is_us and mcap_val < 800000000.0:
+                    tam_points += 3
+                elif not is_us and mcap_val < 1000000000.0:
+                    tam_points += 5
+                elif not is_us and mcap_val < 5000000000.0:
+                    tam_points += 3
+            qual_breakdown["tam_runway"] = float(tam_points)
+            
+            # 8. Management & ownership quality (0-10 points)
+            mgmt_points = 2
+            insider = metrics.promoter_holding
+            if insider is not None:
+                if insider >= 50.0:
+                    mgmt_points += 7
+                elif insider >= 30.0:
+                    mgmt_points += 5
+                elif insider >= 10.0:
+                    mgmt_points += 3
+            qual_breakdown["management_ownership_quality"] = float(mgmt_points)
+            
+            # 9. Reinvestment opportunity (0-10 points)
+            reinvest_points = 3
+            if roic_5y_avg is not None and roic_5y_avg >= 20.0:
+                reinvest_points += 5
+            elif roic_5y_avg is not None and roic_5y_avg >= 15.0:
+                reinvest_points += 3
+            qual_breakdown["reinvestment_opportunity"] = float(min(10, reinvest_points))
+            
+            # 10. Business model resilience & optionality (0-6 points)
+            resilience_points = 3
+            if margin is not None and margin >= 20.0:
+                resilience_points += 2
+            qual_breakdown["business_model_resilience"] = float(min(6, resilience_points))
+            
+            qualitative_score = sum(qual_breakdown.values())
+            candidate.qualitative_score = qualitative_score
+            candidate.qualitative_breakdown = qual_breakdown
+            candidate.composite_score = candidate.score + qualitative_score
+            
+            comp = candidate.composite_score
+            if comp >= 150.0:
+                confidence_level = "High"
+            elif comp >= 120.0:
+                confidence_level = "Medium"
+            else:
+                confidence_level = "Low"
+            candidate.confidence_level = confidence_level
+            
+            name = candidate.company_name or candidate.ticker
+            mcap_str = f"${mcap_val/1e6:.1f}M USD" if is_us else f"₹{mcap_val/1e7:.1f} Cr INR"
+            
+            candidate.thesis_summary = (
+                f"{name} ({candidate.ticker}) exhibits a classic capital-light compounder model with high capital efficiency "
+                f"(ROE: {metrics.roe or 0:.1f}%, ROIC 5y Avg: {roic_5y_avg or 0:.1f}%). Valued at a reasonable trailing P/E of "
+                f"{metrics.trailing_pe or 'N/A'}x and with a small starting size of {mcap_str}, it has a significant runway "
+                f"to reinvest operating cash flows into high-return growth opportunities for multiple decades."
+            )
+            
+            risks = [
+                "Intensifying competitive pressure eroding premium pricing power",
+                "Management execution errors in expanding geographic footprint or product optionality",
+                "Sensitivity to macro-economic slowdowns impacting end-user market demand"
+            ]
+            if metrics.debt_to_equity and metrics.debt_to_equity > 0.5:
+                risks.append("Leverage risks associated with debt service coverage under high-interest regimes")
+            candidate.kill_risks = risks[:3]
+        else:
+            candidate.qualitative_score = None
+            candidate.qualitative_breakdown = None
+            candidate.composite_score = candidate.score
+            candidate.thesis_summary = None
+            candidate.kill_risks = None
+            candidate.confidence_level = None
+            
+        return candidate
 

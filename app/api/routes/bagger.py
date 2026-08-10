@@ -2,7 +2,7 @@ import logging
 import pandas as pd
 import yfinance as yf
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Header
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from app.schemas.bagger import (
@@ -13,7 +13,9 @@ from app.schemas.bagger import (
     ScreenerCheckResult,
     BacktestResponse,
     BacktestSummary,
-    BacktestCandidateResult
+    BacktestCandidateResult,
+    YearlyMetric,
+    StockMetrics
 )
 from app.services.bagger_scanner import BaggerScannerService
 from app.api.dependencies import get_current_user, get_db
@@ -41,6 +43,8 @@ def get_nse_tickers(user_id: str = Depends(get_current_user)):
 @router.post("/scan", response_model=ScanResponse)
 async def scan_tickers(
     request: ScanRequest,
+    quantitative: Optional[str] = Header(None),
+    qualitative: Optional[str] = Header(None),
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):
@@ -63,20 +67,11 @@ async def scan_tickers(
         try:
             # Query pre-scanned records - filter strictly to passed == True by using score >= 90.0
             query = db.query(NSEBaggerScanResult).filter(NSEBaggerScanResult.score >= 90.0)
+            # Get raw records in database
             raw_records = query.all()
             
-            # Sort records: Score descending (highest first), then Market Cap ascending (smallest first) for ties.
-            # Treat None or market caps below ₹50 Cr (500,000,000 INR) as infinity to filter out data errors/shells.
-            def get_sort_key(r):
-                mcap = (r.metrics or {}).get("market_cap")
-                if mcap is None or mcap < 500000000.0:
-                    mcap = float('inf')
-                return (-r.score, mcap)
-            
-            records = sorted(raw_records, key=get_sort_key)
-            
             candidates = []
-            for record in records:
+            for record in raw_records:
                 checks_list = []
                 if record.checks:
                     for c in record.checks:
@@ -104,6 +99,57 @@ async def scan_tickers(
                         explanation=record.explanation or ""
                     )
                 )
+                
+            # Process, enrich, and sort candidates
+            run_quant = (quantitative == "true")
+            run_qual = (qualitative == "true")
+            
+            for c in candidates:
+                m_dict = c.metrics or {}
+                rev_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("revenue_history", [])]
+                eps_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("eps_history", [])]
+                roic_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("roic_history", [])]
+                
+                metrics = StockMetrics(
+                    ticker=c.ticker,
+                    company_name=c.company_name,
+                    market_cap=m_dict.get("market_cap"),
+                    current_price=m_dict.get("current_price"),
+                    trailing_pe=m_dict.get("trailing_pe"),
+                    forward_pe=m_dict.get("forward_pe"),
+                    roe=m_dict.get("roe"),
+                    operating_margin=m_dict.get("operating_margin"),
+                    debt_to_equity=m_dict.get("debt_to_equity"),
+                    promoter_holding=m_dict.get("promoter_holding"),
+                    ocf_to_net_income_ratio=m_dict.get("ocf_to_net_income_ratio"),
+                    pledged_percentage=m_dict.get("pledged_percentage", 0.0),
+                    revenue_history=rev_hist,
+                    eps_history=eps_hist,
+                    roic_history=roic_hist
+                )
+                BaggerScannerService.enrich_candidate_qualitative_quantitative(c, metrics, run_quant, run_qual)
+                
+            if run_quant or run_qual:
+                def get_enhanced_sort_key(c):
+                    depri_key = 1 if not getattr(c, "deprioritized", False) else 0
+                    comp_score = getattr(c, "composite_score", c.score) or c.score
+                    promo = (c.metrics or {}).get("promoter_holding") or 0.0
+                    roic_avg = (c.metrics or {}).get("roic_5y_avg") or 0.0
+                    mcap = (c.metrics or {}).get("market_cap")
+                    if mcap is None or mcap <= 0:
+                        neg_mcap = -float('inf')
+                    else:
+                        neg_mcap = -mcap
+                    return (depri_key, comp_score, promo, roic_avg, neg_mcap)
+                candidates = sorted(candidates, key=get_enhanced_sort_key, reverse=True)
+                candidates = candidates[:15]
+            else:
+                def get_default_sort_key(c):
+                    mcap = (c.metrics or {}).get("market_cap")
+                    if mcap is None or mcap < 500000000.0:
+                        mcap = float('inf')
+                    return (-c.score, mcap)
+                candidates = sorted(candidates, key=get_default_sort_key)
                 
             # Summary Metrics for database population (strictly aligned to 90% threshold)
             total_db_records = db.query(NSEBaggerScanResult).count()
@@ -165,6 +211,57 @@ async def scan_tickers(
         
         # Always filter candidates to passed ones only
         candidates = [c for c in candidates if c.passed]
+        
+        # Process, enrich, and sort candidates
+        run_quant = (quantitative == "true")
+        run_qual = (qualitative == "true")
+        
+        for c in candidates:
+            m_dict = c.metrics or {}
+            rev_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("revenue_history", [])]
+            eps_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("eps_history", [])]
+            roic_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("roic_history", [])]
+            
+            metrics = StockMetrics(
+                ticker=c.ticker,
+                company_name=c.company_name,
+                market_cap=m_dict.get("market_cap"),
+                current_price=m_dict.get("current_price"),
+                trailing_pe=m_dict.get("trailing_pe"),
+                forward_pe=m_dict.get("forward_pe"),
+                roe=m_dict.get("roe"),
+                operating_margin=m_dict.get("operating_margin"),
+                debt_to_equity=m_dict.get("debt_to_equity"),
+                promoter_holding=m_dict.get("promoter_holding"),
+                ocf_to_net_income_ratio=m_dict.get("ocf_to_net_income_ratio"),
+                pledged_percentage=m_dict.get("pledged_percentage", 0.0),
+                revenue_history=rev_hist,
+                eps_history=eps_hist,
+                roic_history=roic_hist
+            )
+            BaggerScannerService.enrich_candidate_qualitative_quantitative(c, metrics, run_quant, run_qual)
+            
+        if run_quant or run_qual:
+            def get_enhanced_sort_key(c):
+                depri_key = 1 if not getattr(c, "deprioritized", False) else 0
+                comp_score = getattr(c, "composite_score", c.score) or c.score
+                promo = (c.metrics or {}).get("promoter_holding") or 0.0
+                roic_avg = (c.metrics or {}).get("roic_5y_avg") or 0.0
+                mcap = (c.metrics or {}).get("market_cap")
+                if mcap is None or mcap <= 0:
+                    neg_mcap = -float('inf')
+                else:
+                    neg_mcap = -mcap
+                return (depri_key, comp_score, promo, roic_avg, neg_mcap)
+            candidates = sorted(candidates, key=get_enhanced_sort_key, reverse=True)
+            candidates = candidates[:15]
+        else:
+            def get_default_sort_key(c):
+                mcap = (c.metrics or {}).get("market_cap")
+                if mcap is None or mcap < 500000000.0:
+                    mcap = float('inf')
+                return (-c.score, mcap)
+            candidates = sorted(candidates, key=get_default_sort_key)
             
         summary = ScanSummary(
             total_input=len(tickers_list),
