@@ -509,6 +509,58 @@ class BaggerScannerService:
         if raw_roic:
             for item in raw_roic:
                 roic_history.append(YearlyMetric(year=item["year"], value=item["roic"]))
+                
+        # EBITDA
+        ebitda_history = []
+        ebitda_vals = YahooFinanceClient.extract_statement_metric(fin_df, ["EBITDA"])
+        if not ebitda_vals:
+            # Fallback to Operating Income + Depreciation & Amortization
+            op_inc_vals = YahooFinanceClient.extract_statement_metric(fin_df, ["Operating Income", "EBIT"])
+            cf_df = statements.get("cashflow") if isinstance(statements, dict) else pd.DataFrame()
+            da_vals = YahooFinanceClient.extract_statement_metric(cf_df if cf_df is not None else pd.DataFrame(), ["Depreciation And Amortization", "Depreciation & Amortization", "Depreciation", "Amortization"])
+            if op_inc_vals:
+                ebitda_vals = []
+                for idx, op_inc in enumerate(op_inc_vals):
+                    da = abs(da_vals[idx]) if (da_vals and idx < len(da_vals) and da_vals[idx] is not None) else 0.0
+                    ebitda_vals.append(op_inc + da if op_inc is not None else None)
+                    
+        if ebitda_vals:
+            years = []
+            for col in fin_df.columns:
+                try:
+                    years.append(pd.to_datetime(col).year)
+                except Exception:
+                    years.append(None)
+            for yr, val in zip(years, ebitda_vals):
+                if yr is not None and val is not None:
+                    ebitda_history.append(YearlyMetric(year=int(yr), value=float(val)))
+                    
+        # Receivables
+        receivables_history = []
+        rec_vals = YahooFinanceClient.extract_statement_metric(bs_df, ["Accounts Receivable", "Receivables", "Net Receivables"])
+        if rec_vals:
+            years = []
+            for col in bs_df.columns:
+                try:
+                    years.append(pd.to_datetime(col).year)
+                except Exception:
+                    years.append(None)
+            for yr, val in zip(years, rec_vals):
+                if yr is not None and val is not None:
+                    receivables_history.append(YearlyMetric(year=int(yr), value=float(val)))
+        # Average Traded Volume
+        average_volume = YahooFinanceClient.extract_float_metric(info, ["averageVolume", "averageVolume10days", "volume"])
+        
+        # CFO / EBITDA 3y average
+        cfo_to_ebitda_avg = None
+        cfo_vals = YahooFinanceClient.extract_statement_metric(cf_df if cf_df is not None else pd.DataFrame(), ["Operating Cash Flow", "Cash Flow From Operating Activities", "Total Cash From Operating Activities"])
+        if ebitda_vals and cfo_vals:
+            ratios = []
+            for e_val, c_val in zip(ebitda_vals, cfo_vals):
+                if e_val and c_val and e_val > 0:
+                    ratios.append(c_val / e_val)
+            if ratios:
+                cfo_to_ebitda_avg = sum(ratios) / len(ratios)
                         
         return StockMetrics(
             ticker=yf_symbol,
@@ -526,7 +578,11 @@ class BaggerScannerService:
             pledged_percentage=pledged_percentage,
             revenue_history=revenue_history,
             eps_history=eps_history,
-            roic_history=roic_history
+            roic_history=roic_history,
+            ebitda_history=ebitda_history,
+            receivables_history=receivables_history,
+            average_volume=average_volume,
+            cfo_to_ebitda_avg=cfo_to_ebitda_avg
         )
 
     @classmethod
@@ -1228,6 +1284,109 @@ Average Scan Speed - {avg_speed_ms} ms/stock
             candidate.thesis_summary = None
             candidate.kill_risks = None
             candidate.confidence_level = None
+            
+        return candidate
+
+    @classmethod
+    def evaluate_safety_filters(
+        cls, 
+        candidate: BaggerCandidate, 
+        metrics: StockMetrics, 
+        run_safety: bool
+    ) -> BaggerCandidate:
+        """
+        Evaluate candidate against strict micro-cap safety and integrity checks.
+        If any safety rule fails, set safety_failed = True, deprioritized = True,
+        and append warning details to safety_flags.
+        """
+        if not run_safety:
+            candidate.safety_failed = False
+            candidate.safety_flags = []
+            return candidate
+
+        safety_failed = False
+        safety_flags = []
+
+        # 1. Cash Flow Integrity (The "Paper vs. Real" Filter)
+        # CFO / EBITDA > 70%
+        cfo_ebitda = metrics.cfo_to_ebitda_avg
+        if cfo_ebitda is not None:
+            if cfo_ebitda < 0.70:
+                safety_failed = True
+                safety_flags.append(f"CFO / EBITDA is less than 70% (Actual: {cfo_ebitda * 100:.1f}%)")
+        else:
+            # Fallback to single year check if average is not calculated
+            if metrics.ocf_to_net_income_ratio is not None and metrics.ocf_to_net_income_ratio < 0.70:
+                safety_failed = True
+                safety_flags.append(f"CFO captures less than 70% of net profits (Actual: {metrics.ocf_to_net_income_ratio * 100:.1f}%)")
+
+        # Negative Free Cash Flow Safeguard
+        raw_info = metrics.dict().get("_raw_info") or {}
+        fcf_val = raw_info.get("freeCashflow") or metrics.dict().get("free_cash_flow")
+        ocf_val = raw_info.get("operatingCashflow") or (metrics.ocf_to_net_income_ratio * (metrics.market_cap / (metrics.trailing_pe or 20.0)) if metrics.market_cap and metrics.ocf_to_net_income_ratio and metrics.trailing_pe else None)
+        
+        if fcf_val is not None and fcf_val < 0:
+            if ocf_val is not None and ocf_val < 0:
+                safety_failed = True
+                safety_flags.append("Negative Free Cash Flow driven by negative Operating Cash Flow (unproductive deficit)")
+
+        # 2. Working Capital & Liquidity Health
+        # Accounts receivable growth vs Sales growth
+        sorted_rec = sorted(metrics.receivables_history, key=lambda x: x.year)
+        sorted_rev = sorted(metrics.revenue_history, key=lambda x: x.year)
+        if len(sorted_rec) >= 2 and len(sorted_rev) >= 2:
+            try:
+                rec_growth = ((sorted_rec[-1].value / sorted_rec[-2].value) - 1.0) * 100.0 if sorted_rec[-2].value and sorted_rec[-2].value > 0 else None
+                rev_growth = ((sorted_rev[-1].value / sorted_rev[-2].value) - 1.0) * 100.0 if sorted_rev[-2].value and sorted_rev[-2].value > 0 else None
+                if rec_growth is not None and rev_growth is not None and rec_growth > rev_growth:
+                    safety_failed = True
+                    safety_flags.append(f"Accounts receivable growth ({rec_growth:.1f}%) exceeds revenue growth ({rev_growth:.1f}%)")
+            except Exception:
+                pass
+
+        # Exit Liquidity limit
+        is_us = not (candidate.ticker.endswith(".NS") or candidate.ticker.endswith(".BO"))
+        mcap_val = metrics.market_cap
+        price_val = metrics.current_price
+        vol_val = metrics.average_volume
+        
+        if vol_val and price_val:
+            daily_market_volume = vol_val * price_val
+            exit_limit = 100000000.0 if not is_us else 1000000.0 # ₹10 Cr INR for India, $1M USD for US
+            if daily_market_volume < exit_limit:
+                safety_failed = True
+                currency_symbol = "$" if is_us else "₹"
+                denom = 1e6 if is_us else 1e7
+                unit = "M" if is_us else "Cr"
+                safety_failed = True
+                safety_flags.append(
+                    f"Insufficient trading liquidity (Daily market volume: {currency_symbol}{daily_market_volume/denom:.2f} {unit} is below safety exit limit)"
+                )
+
+        # 3. Structural Growth & Profitability
+        # ROE > 20% for 3 years (using current ROE and 5-year average ROIC as structural indicators)
+        roic_vals = [m.value for m in metrics.roic_history if m.value is not None]
+        roic_5y_avg = sum(roic_vals) / len(roic_vals) if roic_vals else None
+        
+        if metrics.roe is not None and metrics.roe < 20.0:
+            safety_failed = True
+            safety_flags.append(f"Return on Equity (ROE: {metrics.roe:.1f}%) does not hold above 20.0% structurally")
+        elif roic_5y_avg is not None and roic_5y_avg < 20.0:
+            safety_failed = True
+            safety_flags.append(f"Average 5y ROIC ({roic_5y_avg:.1f}%) is below 20.0% structural limit")
+
+        # 4. Corporate Governance & Transparency
+        # Zero promoter shares pledged
+        if metrics.pledged_percentage is not None and metrics.pledged_percentage > 0.0:
+            safety_failed = True
+            safety_flags.append(f"Promoter shares are pledged (Pledged percentage: {metrics.pledged_percentage:.2f}%)")
+
+        candidate.safety_failed = safety_failed
+        candidate.safety_flags = safety_flags
+        
+        # If safety fails, deprioritize candidate in sorting
+        if safety_failed:
+            candidate.deprioritized = True
             
         return candidate
 

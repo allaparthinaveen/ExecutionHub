@@ -79,6 +79,10 @@ class StockMetrics(BaseModel):
     revenue_history: List[YearlyMetric] = []
     eps_history: List[YearlyMetric] = []
     roic_history: List[YearlyMetric] = []
+    ebitda_history: List[YearlyMetric] = []
+    receivables_history: List[YearlyMetric] = []
+    average_volume: Optional[float] = None
+    cfo_to_ebitda_avg: Optional[float] = None
 
 class ScreenerCheckResult(BaseModel):
     """Evaluation output for a single filter check."""
@@ -111,6 +115,10 @@ class BaggerCandidate(BaseModel):
     thesis_summary: Optional[str] = Field(None, description="Concise investment thesis focused on multi-decade compounding potential.")
     kill_risks: Optional[List[str]] = Field(None, description="List of primary kill risks surfaced for this company.")
     confidence_level: Optional[str] = Field(None, description="Overall conviction level: High, Medium, or Low.")
+    
+    # Extra safety integrity filters (optional, toggled via 'safety' header)
+    safety_failed: Optional[bool] = Field(None, description="Whether the candidate failed any of the micro-cap safety/integrity checks.")
+    safety_flags: Optional[List[str]] = Field(None, description="List of safety check warnings triggered for this company.")
 
 class ScanRequest(BaseModel):
     """Payload for POST /scan requests."""

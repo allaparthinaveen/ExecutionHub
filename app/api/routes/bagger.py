@@ -45,6 +45,7 @@ async def scan_tickers(
     request: ScanRequest,
     quantitative: Optional[str] = Header(None),
     qualitative: Optional[str] = Header(None),
+    safety: Optional[str] = Header(None),
     db: Session = Depends(get_db),
     user_id: str = Depends(get_current_user)
 ):
@@ -103,12 +104,15 @@ async def scan_tickers(
             # Process, enrich, and sort candidates
             run_quant = (quantitative == "true")
             run_qual = (qualitative == "true")
+            run_safety = (safety == "true")
             
             for c in candidates:
                 m_dict = c.metrics or {}
                 rev_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("revenue_history", [])]
                 eps_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("eps_history", [])]
                 roic_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("roic_history", [])]
+                ebitda_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("ebitda_history", [])]
+                receivables_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("receivables_history", [])]
                 
                 metrics = StockMetrics(
                     ticker=c.ticker,
@@ -125,11 +129,16 @@ async def scan_tickers(
                     pledged_percentage=m_dict.get("pledged_percentage", 0.0),
                     revenue_history=rev_hist,
                     eps_history=eps_hist,
-                    roic_history=roic_hist
+                    roic_history=roic_hist,
+                    ebitda_history=ebitda_hist,
+                    receivables_history=receivables_hist,
+                    average_volume=m_dict.get("average_volume"),
+                    cfo_to_ebitda_avg=m_dict.get("cfo_to_ebitda_avg")
                 )
                 BaggerScannerService.enrich_candidate_qualitative_quantitative(c, metrics, run_quant, run_qual)
+                BaggerScannerService.evaluate_safety_filters(c, metrics, run_safety)
                 
-            if run_quant or run_qual:
+            if run_quant or run_qual or run_safety:
                 def get_enhanced_sort_key(c):
                     depri_key = 1 if not getattr(c, "deprioritized", False) else 0
                     comp_score = getattr(c, "composite_score", c.score) or c.score
@@ -215,12 +224,15 @@ async def scan_tickers(
         # Process, enrich, and sort candidates
         run_quant = (quantitative == "true")
         run_qual = (qualitative == "true")
+        run_safety = (safety == "true")
         
         for c in candidates:
             m_dict = c.metrics or {}
             rev_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("revenue_history", [])]
             eps_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("eps_history", [])]
             roic_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("roic_history", [])]
+            ebitda_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("ebitda_history", [])]
+            receivables_hist = [YearlyMetric(year=item["year"], value=item["value"]) for item in m_dict.get("receivables_history", [])]
             
             metrics = StockMetrics(
                 ticker=c.ticker,
@@ -237,11 +249,16 @@ async def scan_tickers(
                 pledged_percentage=m_dict.get("pledged_percentage", 0.0),
                 revenue_history=rev_hist,
                 eps_history=eps_hist,
-                roic_history=roic_hist
+                roic_history=roic_hist,
+                ebitda_history=ebitda_hist,
+                receivables_history=receivables_hist,
+                average_volume=m_dict.get("average_volume"),
+                cfo_to_ebitda_avg=m_dict.get("cfo_to_ebitda_avg")
             )
             BaggerScannerService.enrich_candidate_qualitative_quantitative(c, metrics, run_quant, run_qual)
+            BaggerScannerService.evaluate_safety_filters(c, metrics, run_safety)
             
-        if run_quant or run_qual:
+        if run_quant or run_qual or run_safety:
             def get_enhanced_sort_key(c):
                 depri_key = 1 if not getattr(c, "deprioritized", False) else 0
                 comp_score = getattr(c, "composite_score", c.score) or c.score
