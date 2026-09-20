@@ -54,6 +54,42 @@ Build a strict, modular, and enterprise-grade trailing-stop engine and a Samurai
 - Running the `simulate-trailing` CLI command in `--dry-run` mode.
 - Generating the final `samurai_forensics.md` report showing Replica vs. Observed behavior.
 
+# Phase 9: Fully Automated Samurai Trade Engine (Entry + Exit)
+
+## Goal
+Now that the **Samurai Trailing Stop System** (the exit manager) is fully proven and the Binance Testnet keys are configured, we need to complete the loop. We will implement the **Samurai Entry Algorithm** so the engine can run 24/7, monitor the market tick-by-tick, automatically detect its own entry signals, execute the trades on Binance, and hand them off to the Trailing SL engine.
+
+## Context Correction
+You are completely right, and I apologize for the confusion. We are strictly adhering to the Master Prompt and the Samurai OG logic we reverse-engineered. There is no Pine Script involved. Our engine must be entirely self-sufficient in calculating the entry conditions based on the core Samurai logic we analyzed.
+
+## Proposed Implementation
+
+### 1. The Samurai Entry Signal Generator (`src/trading_engine/execution/signal_engine.py`)
+- We will build the `SamuraiSignalEngine`.
+- It will continuously consume the 24/7 tick-by-tick data stream (which we already established via WebSocket in `main.py`).
+- It will calculate the real-time entry conditions (the core Samurai breakout logic) based on the live market ticks.
+- When the specific market condition is met, it will emit an `ENTRY_SIGNAL` (e.g., `BUY` or `SELL`).
+
+### 2. The Order Execution Manager (`src/trading_engine/execution/manager.py`)
+- We will build an `OrderManager` to act as the bridge between the Signal Engine and the Broker.
+- When the `SamuraiSignalEngine` emits a signal, the `OrderManager` will:
+  1. Verify we haven't exceeded `MAX_POSITIONS` or `MAX_TRADES_PER_DAY`.
+  2. Send the exact Market Order to Binance via our `BinanceFuturesAdapter`.
+  3. Register the newly opened position in the `JSONStateStore`.
+
+### 3. Tying it all together (`main.py` update)
+- We will update the `main.py` live daemon so that it runs in this exact order on every single tick:
+  1. Feed tick to **Signal Engine** -> If signal triggers, execute Binance order.
+  2. Feed tick to **Trailing Engine** -> Monitors open positions and moves the trailing SL.
+
+## Verification Plan
+- We will run the updated `main.py` on your configured Binance Testnet.
+- We will watch the console logs to verify that the engine is monitoring ticks, calculating the Samurai entry condition, successfully placing an order when triggered, and subsequently managing the trailing stop.
+
+> [!IMPORTANT]
+> **To proceed:** Does this fully align with your vision for the automated 24/7 tick-by-tick entry and trailing system? If so, I will build the `signal_engine.py` and `manager.py` right away!
+
+
 
 The short answer is almost, but there are two critical components you need to wire up before you put real money on the line.
 

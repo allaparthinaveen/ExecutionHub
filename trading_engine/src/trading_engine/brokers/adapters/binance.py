@@ -172,6 +172,30 @@ class BinanceFuturesAdapter(BrokerAdapter):
             logger.error("close_position_error", error=str(e))
             return False
 
+    def open_position(self, side: OrderSide, quantity: Decimal) -> Optional[dict]:
+        """
+        Executes a MARKET order to open a new position.
+        """
+        params = self._sign({
+            "symbol": self.symbol,
+            "side": side.value,
+            "type": "MARKET",
+            "quantity": str(quantity)
+        })
+        
+        try:
+            r = self.session.post(f"{self.base_url}/fapi/v1/order", params=params, timeout=(3, 10))
+            if r.status_code == 200:
+                data = r.json()
+                logger.info("MARKET_ORDER_FILLED", side=side.value, qty=str(quantity), order_id=data.get("orderId"))
+                return data
+            else:
+                logger.error("MARKET_ORDER_FAILED", status=r.status_code, response=r.text)
+                return None
+        except Exception as e:
+            logger.error("open_position_error", error=str(e))
+            return None
+
     def health_check(self) -> bool:
         try:
             params = self._sign({})

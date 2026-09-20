@@ -1,6 +1,7 @@
 import structlog
 from datetime import datetime, timezone
 import hashlib
+from typing import Optional
 
 from trading_engine.models.position import Position
 from trading_engine.models.market import MarketState
@@ -9,14 +10,17 @@ from trading_engine.policies.base import TrailingPolicy, TrailingState
 from trading_engine.brokers.base import BrokerAdapter
 from trading_engine.persistence.state_store import StateStore
 from trading_engine.core.validation import validate_stop_decision, ValidationError
+from trading_engine.observability.notifications import NotificationProvider
 
 logger = structlog.get_logger("trailing_engine")
 
 class TrailingEngine:
-    def __init__(self, broker: BrokerAdapter, store: StateStore, policy: TrailingPolicy):
+    def __init__(self, broker: BrokerAdapter, store: StateStore, policy: TrailingPolicy,
+                 notifier: Optional[NotificationProvider] = None):
         self.broker = broker
         self.store = store
         self.policy = policy
+        self.notifier = notifier
         
     def _generate_idempotency_key(self, position_id: str, proposed_stop: str, state_version: str) -> str:
         raw_key = f"{position_id}_{proposed_stop}_{self.policy.version}_{state_version}"
@@ -96,12 +100,32 @@ class TrailingEngine:
             
             if success:
                 logger.info("STOP_MOVE_ACCEPTED", position_id=position_id)
+                old_stop = position.current_stop_loss
                 position.current_stop_loss = decision.proposed_stop
                 state.current_stop = decision.proposed_stop
                 state.last_stop_update = decision.proposed_stop
                 state.last_stop_update_timestamp = datetime.utcnow().isoformat()
+                
+                if self.notifier:
+                    direction = "🔼" if position.side.value == "BUY" else "🔽"
+                    unrealized = market.last - position.entry_price if position.side.value == "BUY" else position.entry_price - market.last
+                    msg = (
+                        f"🛡️ <b>Trailing SL Updated</b>\n\n"
+                        f"Symbol: <b>{position.symbol}</b>  {direction}"
+                        f" {position.side.value}\n"
+                        f"Current Price: <b>{market.last:.2f}</b>\n"
+                        f"SL Moved: {old_stop:.2f} → <b>{decision.proposed_stop:.2f}</b>\n"
+                        f"Unrealized P&L: {unrealized:+.2f} pts\n"
+                        f"Reason: {decision.reason_code}"
+                    )
+                    self.notifier.send_info(msg)
             else:
                 logger.error("STOP_MOVE_FAILED", position_id=position_id)
+                if self.notifier:
+                    self.notifier.send_error(
+                        f"⚠️ Failed to move Trailing SL for {position.symbol} "
+                        f"to {decision.proposed_stop:.2f}"
+                    )
                 
         # 5. Save State
         self.store.save_position(position)
