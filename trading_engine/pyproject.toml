@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trading_engine"
+version = "0.1.0"
+description = "Enterprise-Grade Trading Trailing-Stop Engine + Samurai AI OG Reverse Engineering"
+authors = [
+    {name = "Naveen Allaparthi", email = "naveen@example.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.0.0",
+    "pydantic-settings>=2.0.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.11.0",
+    "structlog>=23.1.0",
+    "tenacity>=8.2.0",
+    "SQLAlchemy>=2.0.0",
+    "httpx>=0.25.0",
+    "prometheus-client>=0.17.0",
+    "pyyaml>=6.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "hypothesis>=6.82.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+addopts = "-ra -q"
+testpaths = [
+    "tests",
+]
