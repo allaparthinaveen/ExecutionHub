@@ -17,3 +17,4 @@ class MarketState(BaseModel):
     atr_values: Optional[dict[str, Decimal]] = None
     session: Optional[str] = None
     market_status: str = "OPEN"
+    metadata: dict = Field(default_factory=dict)

@@ -19,7 +19,8 @@ class OrderManager:
         self.store = store
         self.notifier = notifier
         
-    def execute_entry(self, side: OrderSide) -> bool:
+    def execute_entry(self, side: OrderSide, metadata: dict = None) -> bool:
+        metadata = metadata or {}
         # 1. Check Risk Limits
         open_positions = self.broker.get_positions()
         if len(open_positions) >= settings.max_positions:
@@ -36,12 +37,18 @@ class OrderManager:
             logger.info("ENTRY_SUCCESSFUL")
             fill_price = result.get("avgPrice", "UNKNOWN")
             
-            # Simple initial SL/TP estimation for notification (from Samurai OG values: SL 10, TP 30)
+            # Simple initial SL/TP estimation for notification
             if fill_price != "UNKNOWN":
                 try:
                     price = float(fill_price)
-                    sl_val = price - 10 if side == OrderSide.BUY else price + 10
-                    tp_val = price + 30 if side == OrderSide.BUY else price - 30
+                    
+                    if "pending_stop" in metadata:
+                        sl_val = float(metadata["pending_stop"])
+                        tp_val = price + (price - sl_val) * float(metadata.get("target_r", 1.5)) if side == OrderSide.BUY else price - (sl_val - price) * float(metadata.get("target_r", 1.5))
+                    else:
+                        sl_val = price - 10 if side == OrderSide.BUY else price + 10
+                        tp_val = price + 30 if side == OrderSide.BUY else price - 30
+                        
                     details = f"Fill Price: {price:.2f}\nInitial SL: {sl_val:.2f}\nTarget (TP): {tp_val:.2f}"
                 except ValueError:
                     details = f"Fill Price: {fill_price}"

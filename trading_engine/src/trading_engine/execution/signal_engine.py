@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Tuple
 from decimal import Decimal
 import structlog
 from trading_engine.models.market import MarketState
@@ -20,7 +20,8 @@ class SamuraiSignalEngine:
         self.daily_low_cache: Optional[Decimal] = None
         self.straddle_armed = False
         
-    def evaluate(self, market: MarketState) -> Optional[OrderSide]:
+        
+    def evaluate(self, market: MarketState) -> Tuple[Optional[OrderSide], dict]:
         # Initialize levels if not set
         if self.daily_high_cache is None or self.daily_low_cache is None:
             # We simulate the previous day's range being a tight band around current price
@@ -31,17 +32,17 @@ class SamuraiSignalEngine:
             logger.info("STRADDLE_ARMED", high=str(self.daily_high_cache), low=str(self.daily_low_cache))
             
         if not self.straddle_armed:
-            return None
+            return None, {}
             
         # Check Breakout Condition (Samurai Core Entry Logic)
         if market.last >= self.daily_high_cache:
             logger.info("BREAKOUT_DETECTED", condition="PRICE_ABOVE_HIGH", price=str(market.last))
             self.straddle_armed = False # Disarm until next day
-            return OrderSide.BUY
+            return OrderSide.BUY, {}
             
         if market.last <= self.daily_low_cache:
             logger.info("BREAKOUT_DETECTED", condition="PRICE_BELOW_LOW", price=str(market.last))
             self.straddle_armed = False # Disarm until next day
-            return OrderSide.SELL
+            return OrderSide.SELL, {}
             
-        return None
+        return None, {}

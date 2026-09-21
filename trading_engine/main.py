@@ -14,8 +14,10 @@ from trading_engine.config.settings import settings
 from trading_engine.brokers.adapters.binance import BinanceFuturesAdapter
 from trading_engine.persistence.json_store import JSONStateStore
 from trading_engine.policies.samurai import SamuraiTrailingPolicy
+from trading_engine.policies.btc_policy import BTCRegimeTrailingPolicy
 from trading_engine.core.engine import TrailingEngine
 from trading_engine.execution.signal_engine import SamuraiSignalEngine
+from trading_engine.execution.btc_signal_engine import BTCSignalEngine
 from trading_engine.execution.manager import OrderManager
 from trading_engine.models.market import MarketState
 from trading_engine.observability.logging import setup_logging
@@ -42,7 +44,9 @@ async def heartbeat_loop(notifier: TelegramNotificationProvider, broker: Binance
             notifier.send_critical(msg)
         logger.info("HEARTBEAT_SENT", broker_alive=is_alive)
 
-async def binance_ws_loop(engine: TrailingEngine, signal_engine: SamuraiSignalEngine, order_manager: OrderManager, symbol: str):
+from typing import Any
+
+async def binance_ws_loop(engine: TrailingEngine, signal_engine: Any, order_manager: OrderManager, symbol: str):
     """
     Connects to Binance Futures WebSocket and streams mark prices to the engine.
     """
@@ -83,11 +87,11 @@ async def binance_ws_loop(engine: TrailingEngine, signal_engine: SamuraiSignalEn
                             min_stop_distance=tick_size * 5  # Example minimum
                         )
                         
-                        # 1. Samurai Signal Engine evaluates the tick for a new entry
-                        signal = signal_engine.evaluate(market)
+                        # 1. Signal Engine evaluates the tick for a new entry
+                        signal, metadata = signal_engine.evaluate(market)
                         if signal:
                             # 2. Order Manager executes the entry
-                            order_manager.execute_entry(signal)
+                            order_manager.execute_entry(signal, metadata)
                         
                         # 3. Trailing Engine manages existing positions
                         positions = engine.broker.get_positions()
@@ -122,27 +126,43 @@ async def main():
     
     # 3. Configure the Samurai Policy
     # We use the parameters identified during the forensic phase
-    policy = SamuraiTrailingPolicy(activation_pts=Decimal('0.50'), step_pts=Decimal('0.20'))
+    samurai_policy = SamuraiTrailingPolicy(activation_pts=Decimal('0.50'), step_pts=Decimal('0.20'))
+    
+    # 3b. Configure BTC Policy
+    btc_policy = BTCRegimeTrailingPolicy(
+        target_r=Decimal('1.5'),
+        move_be_at_r=Decimal('1.0'),
+        trail_start_r=Decimal('1.0'),
+        trail_atr_mult=Decimal('1.0'),
+        stop_atr_mult=Decimal('1.5')
+    )
     
     # 4. Initialize Notifier
     notifier = TelegramNotificationProvider()
 
     # 5. Initialize Execution Managers (inject notifier)
-    engine = TrailingEngine(broker=broker, store=store, policy=policy, notifier=notifier)
-    signal_engine = SamuraiSignalEngine()
-    order_manager = OrderManager(broker=broker, store=store, notifier=notifier)
+    # SAMURAI ENGINE (XAUUSDT)
+    samurai_engine = TrailingEngine(broker=broker, store=store, policy=samurai_policy, notifier=notifier)
+    samurai_signals = SamuraiSignalEngine()
+    samurai_order_mgr = OrderManager(broker=broker, store=store, notifier=notifier)
+    
+    # BTC ENGINE (BTCUSDT)
+    btc_engine = TrailingEngine(broker=broker, store=store, policy=btc_policy, notifier=notifier)
+    btc_signals = BTCSignalEngine()
+    btc_order_mgr = OrderManager(broker=broker, store=store, notifier=notifier)
 
     # 6. Startup notification
     notifier.send_info(
-        f"🚀 <b>Samurai Engine Started</b>\n\n"
+        f"🚀 <b>Trading Engines Started</b>\n\n"
         f"Mode: <b>{'TESTNET' if settings.binance_testnet else 'LIVE'}</b>\n"
-        f"Symbol: <b>{settings.symbol}</b>\n"
+        f"Engines: Samurai ({settings.symbol}), BTC Regime (BTCUSDT)\n"
         f"Time: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')} UTC"
     )
 
-    # 7. Run WebSocket loop + heartbeat concurrently
+    # 7. Run WebSocket loops + heartbeat concurrently
     await asyncio.gather(
-        binance_ws_loop(engine, signal_engine, order_manager, settings.symbol),
+        binance_ws_loop(samurai_engine, samurai_signals, samurai_order_mgr, settings.symbol),
+        binance_ws_loop(btc_engine, btc_signals, btc_order_mgr, "BTCUSDT"),
         heartbeat_loop(notifier, broker),
     )
 
