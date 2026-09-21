@@ -25,6 +25,12 @@ class BTCRegimeTrailingPolicy(TrailingPolicy):
         self.trail_start_r = trail_start_r
         self.trail_atr_mult = trail_atr_mult
         self.stop_atr_mult = stop_atr_mult
+        
+    @property
+    def configuration_hash(self) -> str:
+        import hashlib
+        config_str = f"{self.name}_{self.version}_{self.target_r}_{self.move_be_at_r}_{self.trail_start_r}_{self.trail_atr_mult}_{self.stop_atr_mult}"
+        return hashlib.sha256(config_str.encode('utf-8')).hexdigest()
 
     def evaluate(self, position: Position, market: MarketState, state: TrailingState) -> TrailingDecision:
         # First tick initialization
@@ -52,24 +58,29 @@ class BTCRegimeTrailingPolicy(TrailingPolicy):
                 previous_stop=None,
                 reason_code="INITIAL_STOP_SET",
                 reason_message="Initial stop calculated from ATR",
+                policy_name=self.name,
+                policy_version=self.version,
                 profit_r=Decimal('0')
             )
             
         r_mult = position.profit_r or Decimal('0')
         atr = market.atr_values.get('atr14', Decimal('100.0')) if market.atr_values else Decimal('100.0')
         
-        # 1. Target Hit check
+        # Update current price so profit_r is live
+        position.current_price = market.last
+
+        # 1. Target Hit check — exit at current market price
         if position.take_profit:
             if position.side.value == "BUY" and market.last >= position.take_profit:
-                return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=position.current_stop_loss, previous_stop=position.current_stop_loss, reason_code="TARGET_HIT", profit_r=r_mult)
+                return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=market.last, previous_stop=position.current_stop_loss, reason_code="TARGET_HIT", reason_message="Target reached", policy_name=self.name, policy_version=self.version, profit_r=r_mult)
             elif position.side.value == "SELL" and market.last <= position.take_profit:
-                return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=position.current_stop_loss, previous_stop=position.current_stop_loss, reason_code="TARGET_HIT", profit_r=r_mult)
+                return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=market.last, previous_stop=position.current_stop_loss, reason_code="TARGET_HIT", reason_message="Target reached", policy_name=self.name, policy_version=self.version, profit_r=r_mult)
 
         # 2. Stop Exit check
         if position.side.value == "BUY" and market.last <= position.current_stop_loss:
-            return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=position.current_stop_loss, previous_stop=position.current_stop_loss, reason_code="STOP_HIT", profit_r=r_mult)
+            return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=position.current_stop_loss, previous_stop=position.current_stop_loss, reason_code="STOP_HIT", reason_message="Stop loss hit", policy_name=self.name, policy_version=self.version, profit_r=r_mult)
         if position.side.value == "SELL" and market.last >= position.current_stop_loss:
-            return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=position.current_stop_loss, previous_stop=position.current_stop_loss, reason_code="STOP_HIT", profit_r=r_mult)
+            return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=position.current_stop_loss, previous_stop=position.current_stop_loss, reason_code="STOP_HIT", reason_message="Stop loss hit", policy_name=self.name, policy_version=self.version, profit_r=r_mult)
 
         proposed_stop = position.current_stop_loss
         reason = "NO_ACTION"
@@ -105,7 +116,10 @@ class BTCRegimeTrailingPolicy(TrailingPolicy):
                 proposed_stop=proposed_stop,
                 previous_stop=position.current_stop_loss,
                 reason_code=reason,
+                reason_message=reason,
+                policy_name=self.name,
+                policy_version=self.version,
                 profit_r=r_mult
             )
             
-        return TrailingDecision(action=TrailingAction.NO_ACTION, proposed_stop=position.current_stop_loss, previous_stop=position.current_stop_loss, reason_code="NO_ACTION", profit_r=r_mult)
+        return TrailingDecision(action=TrailingAction.NO_ACTION, proposed_stop=position.current_stop_loss, previous_stop=position.current_stop_loss, reason_code="NO_ACTION", reason_message="No action", policy_name=self.name, policy_version=self.version, profit_r=r_mult)
