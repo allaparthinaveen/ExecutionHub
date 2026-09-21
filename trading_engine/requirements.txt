@@ -1,0 +1,21 @@
+# Core engine dependencies
+pydantic>=2.0.0
+pydantic-settings>=2.0.0
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.11.0
+structlog>=23.1.0
+tenacity>=8.2.0
+SQLAlchemy>=2.0.0
+httpx>=0.25.0
+prometheus-client>=0.17.0
+pyyaml>=6.0.1
+
+# WebSocket (live market feed)
+websockets>=12.0
+
+# HTTP requests (Binance REST API + Telegram)
+requests>=2.31.0
+
+# Decimal / type safety (stdlib, no install needed)
+# decimal — included in Python stdlib

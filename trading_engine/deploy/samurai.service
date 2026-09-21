@@ -1,0 +1,36 @@
+[Unit]
+Description=Samurai AI Trading Engine
+Documentation=https://github.com/allaparthinaveen/ExecutionHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+
+# ── Working directory (absolute path on EC2) ──
+WorkingDirectory=/home/ubuntu/ExecutionHub/trading_engine
+
+# ── Python entrypoint ─────────────────────────
+ExecStart=/home/ubuntu/ExecutionHub/trading_engine/venv/bin/python main.py
+
+# ── Load secrets from .env ────────────────────
+EnvironmentFile=/home/ubuntu/ExecutionHub/trading_engine/.env
+
+# ── Restart policy ────────────────────────────
+# Always restart on crash, with 10s cooldown
+Restart=always
+RestartSec=10s
+
+# ── Logging (viewable via: journalctl -u samurai -f) ──
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=samurai
+
+# ── Resource limits (safe for t2.micro 1GB RAM) ──
+MemoryMax=512M
+CPUQuota=80%
+
+[Install]
+WantedBy=multi-user.target
