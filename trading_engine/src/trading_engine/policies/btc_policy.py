@@ -19,12 +19,14 @@ class BTCRegimeTrailingPolicy(TrailingPolicy):
                  move_be_at_r: Decimal = Decimal('1.0'),
                  trail_start_r: Decimal = Decimal('1.0'),
                  trail_atr_mult: Decimal = Decimal('1.0'),
-                 stop_atr_mult: Decimal = Decimal('1.5')):
+                 stop_atr_mult: Decimal = Decimal('1.5'),
+                 use_fixed_target: bool = False):
         self.target_r = target_r
         self.move_be_at_r = move_be_at_r
         self.trail_start_r = trail_start_r
         self.trail_atr_mult = trail_atr_mult
         self.stop_atr_mult = stop_atr_mult
+        self.use_fixed_target = use_fixed_target
         
     @property
     def configuration_hash(self) -> str:
@@ -65,16 +67,16 @@ class BTCRegimeTrailingPolicy(TrailingPolicy):
             
         r_mult = position.profit_r or Decimal('0')
         atr = market.atr_values.get('atr14', Decimal('100.0')) if market.atr_values else Decimal('100.0')
-        
+
         # Update current price so profit_r is live
         position.current_price = market.last
 
-        # 1. Target Hit check — exit at current market price
-        if position.take_profit:
+        # 1. Fixed target exit (optional — disabled by default to let trailing run)
+        if self.use_fixed_target and position.take_profit:
             if position.side.value == "BUY" and market.last >= position.take_profit:
-                return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=market.last, previous_stop=position.current_stop_loss, reason_code="TARGET_HIT", reason_message="Target reached", policy_name=self.name, policy_version=self.version, profit_r=r_mult)
+                return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=market.last, previous_stop=position.current_stop_loss, reason_code="TARGET_HIT", reason_message="Fixed target reached", policy_name=self.name, policy_version=self.version, profit_r=r_mult)
             elif position.side.value == "SELL" and market.last <= position.take_profit:
-                return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=market.last, previous_stop=position.current_stop_loss, reason_code="TARGET_HIT", reason_message="Target reached", policy_name=self.name, policy_version=self.version, profit_r=r_mult)
+                return TrailingDecision(action=TrailingAction.CLOSE_POSITION, proposed_stop=market.last, previous_stop=position.current_stop_loss, reason_code="TARGET_HIT", reason_message="Fixed target reached", policy_name=self.name, policy_version=self.version, profit_r=r_mult)
 
         # 2. Stop Exit check
         if position.side.value == "BUY" and market.last <= position.current_stop_loss:
@@ -97,18 +99,21 @@ class BTCRegimeTrailingPolicy(TrailingPolicy):
                 state.metadata["be_moved"] = True
                 reason = "MOVE_TO_BE"
 
-        # 4. Trailing
-        if r_mult > Decimal('0'):
+        # 4. Progressive Trailing — tighten trail as profit grows
+        if r_mult >= Decimal('0'):
             if position.side.value == "BUY" and market.last >= position.entry_price + position.initial_risk * self.trail_start_r:
-                new_stop = market.last - atr * self.trail_atr_mult
+                # Tighten from 1 ATR to 0.5 ATR once beyond target_r
+                atr_mult = self.trail_atr_mult * Decimal('0.5') if r_mult >= self.target_r else self.trail_atr_mult
+                new_stop = market.last - atr * atr_mult
                 if new_stop > proposed_stop:
                     proposed_stop = new_stop
-                    reason = "TRAILING_UPDATE"
+                    reason = f"TRAILING_UPDATE (R={float(r_mult):.2f})"
             elif position.side.value == "SELL" and market.last <= position.entry_price - position.initial_risk * self.trail_start_r:
-                new_stop = market.last + atr * self.trail_atr_mult
+                atr_mult = self.trail_atr_mult * Decimal('0.5') if r_mult >= self.target_r else self.trail_atr_mult
+                new_stop = market.last + atr * atr_mult
                 if new_stop < proposed_stop:
                     proposed_stop = new_stop
-                    reason = "TRAILING_UPDATE"
+                    reason = f"TRAILING_UPDATE (R={float(r_mult):.2f})"
 
         if proposed_stop != position.current_stop_loss:
             return TrailingDecision(
