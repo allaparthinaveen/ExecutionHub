@@ -1,6 +1,7 @@
 import asyncio
 import json
 import sys
+import os
 from pathlib import Path
 from decimal import Decimal
 from datetime import datetime
@@ -43,6 +44,24 @@ async def heartbeat_loop(notifier: TelegramNotificationProvider, broker: Binance
         else:
             notifier.send_critical(msg)
         logger.info("HEARTBEAT_SENT", broker_alive=is_alive)
+
+async def dummy_web_server():
+    """
+    Render requires a Web Service to bind to the $PORT environment variable.
+    This lightweight TCP server simply returns a 200 OK so Render doesn't kill the bot.
+    """
+    async def handle_http(reader, writer):
+        data = await reader.read(100)
+        response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nTrading Engine is running."
+        writer.write(response)
+        await writer.drain()
+        writer.close()
+        
+    port = int(os.environ.get("PORT", 8080))
+    server = await asyncio.start_server(handle_http, '0.0.0.0', port)
+    logger.info("DUMMY_WEB_SERVER_STARTED", port=port)
+    async with server:
+        await server.serve_forever()
 
 from typing import Any
 
@@ -164,6 +183,7 @@ async def main():
         binance_ws_loop(samurai_engine, samurai_signals, samurai_order_mgr, settings.symbol),
         binance_ws_loop(btc_engine, btc_signals, btc_order_mgr, "BTCUSDT"),
         heartbeat_loop(notifier, broker),
+        dummy_web_server(),
     )
 
 if __name__ == "__main__":
