@@ -35,9 +35,9 @@ class BTCSignalEngine:
                  retest_bars: int = 25,
                  retest_buffer: Decimal = Decimal('0.75'),
                  atr_len: int = 14,
-                 stop_atr_mult: Decimal = Decimal('1.5'),
+                 stop_atr_mult: Decimal = Decimal('2.0'),
                  min_stop_pct: Decimal = Decimal('0.003'),
-                 target_r: Decimal = Decimal('1.5'),
+                 target_r: Decimal = Decimal('2.0'),
                  allow_shorts: bool = True):
         
         self.pivot_len = pivot_len

@@ -15,11 +15,11 @@ class BTCRegimeTrailingPolicy(TrailingPolicy):
     name = "btc_regime_breakout"
     version = "1.0.0"
     
-    def __init__(self, target_r: Decimal = Decimal('1.5'),
+    def __init__(self, target_r: Decimal = Decimal('2.0'),
                  move_be_at_r: Decimal = Decimal('1.0'),
                  trail_start_r: Decimal = Decimal('1.0'),
                  trail_atr_mult: Decimal = Decimal('1.0'),
-                 stop_atr_mult: Decimal = Decimal('1.5'),
+                 stop_atr_mult: Decimal = Decimal('2.0'),
                  use_fixed_target: bool = False):
         self.target_r = target_r
         self.move_be_at_r = move_be_at_r
