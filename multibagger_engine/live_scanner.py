@@ -1,7 +1,7 @@
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from data.universe import get_mvrd_universe
+from multibagger_engine.data.universe import get_mvrd_universe
 
 def run_live_scanner():
     print("============================================================")
